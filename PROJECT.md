@@ -13,7 +13,13 @@ https://sites.google.com/view/rlxf-icml2026
 
 Our tractor had a 200 neuron network to navigate its world and while looking of how it adapts to an environment I got an interesting idea - why not have such super small network controlling immediate movements so the tractor can adapt to every single part of the cornfield on the spot. The idea is that the terrain of the field will be drastically different in different places so maybe using a network that relearns all of its parameters when it gets to a new type of terrain seems interesting. We can have a higher order more abstract bigger network that is updating slowly that navigates it in the general "go that direction".
 
-Current best idea: Bigger network will predict the trajectory, the smaller will adapt super fast on how to execute it in the current environment.
+Current best idea: No fixed goal point. The task is maximum area covered with minimum overlap, from only onboard sensors.
+
+Important constraint: final training/adaptation is fully real-world on the tractor. Simulation is only for hypothesis checks / ablations, not the final training story.
+
+The system never knows the whole map. No full-map planner, no privileged global expert in the final method. The robot only has camera, distance sensors, its own action/history/maybe odometry, and learned memory.
+
+Architecture idea: bigger/slower policy proposes local coverage direction / short local path; smaller/fast adaptive controller learns how to execute it on current terrain.
 
 https://arxiv.org/pdf/1803.11347 - adapting 2019
 
