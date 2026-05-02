@@ -1,67 +1,130 @@
 # Project scratchboard document
+
+## Name: Grounded Exploration: Decoupled Planning and Terrain-Adaptive Execution from Onboard World Feedback
+
 ---
 This is our main whiteboard document about reading research papers and ideas for our paper for the RLxF (reinforcement learning from world feedback) ICML workshop.
 > This is mainly a human shared and managed document
 ---
-
 This is our hackathon project:
 https://github.com/backprop-pray/Tracky
+The tractor has: 3 distance sensors in front, 2 on the sides, front camera and a MPU.
 
 We want to reuse the tractor for this:
 https://sites.google.com/view/rlxf-icml2026
 (we will just use the hardware and whatever RL code we have, we will not frame the paper as agriculture or such, we just so happen to have the needed hardware to do tests in the RLxF realm)
 
-Our tractor had a 200 neuron network to navigate its world and while looking of how it adapts to an environment I got an interesting idea - why not have such super small network controlling immediate movements so the tractor can adapt to every single part of the cornfield on the spot. The idea is that the terrain of the field will be drastically different in different places so maybe using a network that relearns all of its parameters when it gets to a new type of terrain seems interesting. We can have a higher order more abstract bigger network that is updating slowly that navigates it in the general "go that direction".
+## Current direction
 
-Current best idea: No fixed goal point. The task is maximum area covered with minimum overlap, from only onboard sensors.
+Objective - maximize exploration as area covered the fastest. Find more new places.
 
-Important constraint: final training/adaptation is fully real-world on the tractor. Simulation is only for hypothesis checks / ablations, not the final training story.
+Current method idea: real-world no-map local exploration from world feedback.
 
-The system never knows the whole map. No full-map planner, no privileged global expert in the final method. The robot only has camera, distance sensors, its own action/history/maybe odometry, and learned memory.
+The robot never knows the whole map. Training and adaptation for the final result happen on the real tractor, not in sim. Sim is only for hypothesis checks.
 
-Architecture idea: bigger/slower policy proposes local coverage direction / short local path; smaller/fast adaptive controller learns how to execute it on current terrain.
+We should not learn raw motor PWM directly as the main policy output. The slow policy should output a short local movement guide:
 
-https://arxiv.org/pdf/1803.11347 - adapting 2019
+```text
+action = [curvature, horizon, speed]
+```
 
-https://mdpi-res.com/d_attachment/sensors/sensors-25-06877/article_deploy/sensors-25-06877-v2.pdf?version=1762918091 - 2025
-^ Tank tractor. They train a LSTM to predict the tractor XY position based wheel pos and torques and momentum. It learns what position will be in X timesteps based on real world calibration data during "training". After training it is frozen and used to test model torques to compute optimal motor torques for trajectory tracking.
+Meaning:
 
+```text
+curvature < 0: arc right
+curvature = 0: go straight
+curvature > 0: arc left
+horizon: how long / far to commit
+speed: how aggressively to execute
+```
 
-Depth estimation from 1 camera - huggingface/openCV
+This keeps a trajectory-planning shape without needing a full MTG waypoint generator yet.
 
+Pipeline:
 
-Possible baseline buildup:
-Deterministic algo (which?): Bug2 or Tangent Bug
+```text
+camera + ultrasonic + IMU + motor/action history
+    -> encoder / short memory
+    -> SAC-style local guide policy: [curvature, horizon, speed]
+    -> adaptive executor converts guide to left/right motor commands
+    -> world feedback scores what happened
+```
 
-Wall-following + row sweep hybrid:
-1. Drive forward until front sensor < threshold
-2. Turn right (or left, pick one consistently)
-3. Follow the wall keeping side sensor at target distance
-4. Track heading changes — if you've turned 360° you've circumnavigated
-5. Move inward and repeat
+Executor idea: tiny learnable controller with deterministic fallback.
 
+```text
+input:
+    desired guide = [curvature, horizon, speed]
+    current IMU / distance sensors / last motor commands
 
+output:
+    left/right motor command for the next control tick
 
-RL-based
-RL + trajectory planning (deterministic trajectory + vice versa)
-RL + trajectory panning + two neural nets
+base fallback:
+    deterministic arc model converts curvature + speed to left/right ratio
 
+feedback:
+    gyro yaw rate says whether desired curvature is happening
+    accelerometer says motion/vibration/slip/stuck/terrain response
+    distance sensors say emergency obstacle
 
-Evaluation:
-Cross path percentage
-Full exploratory coverage
-Speed
+learning target / reward:
+    execute requested curvature/horizon as closely as possible
+    avoid slip, stuck, obstacle approach, violent vibration
+```
 
-RL-steps:
-Convert the states to adequate vector
-Trajectory
+This executor is intentionally learnable. It can be very small, e.g. `10-200` neurons, because it does not decide where to explore. It only learns how to make the physical tractor execute the guide that the SAC planner requested.
 
-What will be useful in the loss/reward:
-stuck detection -
-collision / near collision -
-vibration / instability -
-trajectory smoothness +
+So the split is:
 
+```text
+SAC planner: choose useful local guide for exploration
+tiny executor: make the motors/terrain actually realize that guide
+```
 
-Future work:
-Offline training with data recorded during inference/testing. Propose how exactly we will do that
+Example:
+
+```text
+planner outputs: curve left for 1.2s at 60% speed
+executor outputs motor ticks while watching IMU
+IMU says: not turning enough / slipping
+executor learns: this terrain needs stronger differential drive for same curvature
+```
+
+We need many short real-world execution tests from IMU/distance sensors. Each test provides world feedback:
+
+```text
+requested curvature/horizon/speed
+motor commands actually sent
+gyro yaw achieved
+acceleration/vibration/stuck signal
+distance safety signal
+execution score
+```
+
+Training should split the objectives.
+
+Planner / SAC reward: exploration value of the chosen guide.
+
+```text
+planner_reward = new sensory experience / likely new area
+               + safe successful motion
+               - collision / near obstacle
+               - repeated recent state / overlap
+               - choosing guides the executor consistently fails to execute
+```
+
+Executor loss/reward: physical execution quality of the requested guide.
+
+```text
+executor_loss = curvature_error
+              + progress_error
+              + slip / stuck penalty
+              + vibration penalty
+              + unsafe distance penalty
+              + motor jerk / violent command penalty
+```
+
+The planner should learn **where/how to explore**. The executor should learn **how to make the tractor actually move like the requested guide on the current terrain**.
+
+RND can provide the novelty part of the reward, but it must be filtered by safety and motion signals. RECON-style memory can estimate revisits/overlap. MTG is the architecture inspiration for later replacing `[curvature, horizon, speed]` with multiple generated local trajectory candidates.

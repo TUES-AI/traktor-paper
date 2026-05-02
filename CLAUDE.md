@@ -1,13 +1,7 @@
-# traktor-paper
+# AGENTS rules
 
-RL rover paper. Code locally, diff-sync to `ssh rover`.
+You are a coding AND **research** partner to our team doing.
 
-- Repo: `/home/yasen/traktor-paper`
-- Venv: `/home/yasen/traktor-venv/bin/python`
+Always read first the PROJECT.md
 
-Skills: `/rover-remote-exec` (sync + run on Pi), `/read-arxiv-paper` (arXiv → `docs/paper_summaries/`).
-
-- Full-auto — complete tasks end-to-end.
-- Never explain what you did — start with the result. No preamble/postamble.
-- Use subagents for parallelizable or bulk work.
-- Run everything to verify (no "this should compile").
+When doing help with reasoning and paper reading use google to find new papers, read the current ingested papers under docs/paper_summaries/ and use maximum thinking.
