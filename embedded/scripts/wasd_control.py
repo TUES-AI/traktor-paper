@@ -1,92 +1,112 @@
 #!/usr/bin/env python3
-"""Interactive keyboard motor control.
+"""Minimal WASD drive control.
 
 Keys:
-- w/s: forward/backward
-- a/d: spin left/right
+- w: forward
+- s: backward
+- a: spin left
+- d: spin right
 - x: stop
-- +/-: adjust speed
-- 1-9: set 10-90 percent speed
-- 0: set 100 percent speed
 - q: quit
+
+Hold a key to run. If no repeated key arrives for a short timeout, motors stop.
 """
 
 import sys
 import termios
+import time
 import tty
+from select import select
 
 import _paths  # noqa: F401
-from api import RoverAPI
+from drivers.motor.hbridge import DualHBridgeMotorDriver
+from hardware_pins import LEFT_MOTOR_PINS, MOTOR_PWM_FREQUENCY_HZ, MOTOR_PWM_PINS, RIGHT_MOTOR_PINS
 
-SPEED_STEP = 10
-DEFAULT_SPEED = 60
+SPEED = 100
+STOP_AFTER_SECONDS = 0.22
+
+COMMANDS = {
+    'w': ('forward', 'forward', 'forward'),
+    's': ('backward', 'backward', 'backward'),
+    'a': ('backward', 'forward', 'spin left'),
+    'd': ('forward', 'backward', 'spin right'),
+}
 
 
-def clamp_speed(value):
-    return max(0, min(100, int(value)))
-
-
-def read_key():
+def set_raw_terminal():
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        return sys.stdin.read(1)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    tty.setraw(fd)
+    return fd, old_settings
 
 
-def apply_drive(rover, left_direction, right_direction, speed):
-    return rover.drive(left_direction, right_direction, left_speed=speed, right_speed=speed)
+def read_pending_key():
+    ready, _, _ = select([sys.stdin], [], [], 0.02)
+    if not ready:
+        return None
+    key = sys.stdin.read(1).lower()
+    while select([sys.stdin], [], [], 0)[0]:
+        key = sys.stdin.read(1).lower()
+    return key
 
 
 def main():
-    rover = RoverAPI()
-    speed = DEFAULT_SPEED
-    left_direction = 'stop'
-    right_direction = 'stop'
+    motor = DualHBridgeMotorDriver(
+        left_in1=LEFT_MOTOR_PINS[0],
+        left_in2=LEFT_MOTOR_PINS[1],
+        right_in1=RIGHT_MOTOR_PINS[0],
+        right_in2=RIGHT_MOTOR_PINS[1],
+        left_pwm_pin=MOTOR_PWM_PINS[0],
+        right_pwm_pin=MOTOR_PWM_PINS[1],
+        pwm_frequency_hz=MOTOR_PWM_FREQUENCY_HZ,
+    )
 
-    print(__doc__.strip())
-    print(f'Current speed: {speed}%')
+    print(__doc__.strip(), flush=True)
+    print(f'pins: left={LEFT_MOTOR_PINS}, right={RIGHT_MOTOR_PINS}, pwm={MOTOR_PWM_PINS}', flush=True)
+    print(f'speed: {SPEED}%', flush=True)
+    print(f'hold-to-run timeout: {STOP_AFTER_SECONDS}s', flush=True)
 
+    fd = None
+    old_settings = None
+    active_key = None
+    last_key_time = 0.0
     try:
+        fd, old_settings = set_raw_terminal()
+        motor.stop()
         while True:
-            key = read_key()
+            now = time.monotonic()
+            key = read_pending_key()
 
-            if key in ('+', '='):
-                speed = clamp_speed(speed + SPEED_STEP)
-            elif key == '-':
-                speed = clamp_speed(speed - SPEED_STEP)
-            elif key.isdigit():
-                speed = 100 if key == '0' else int(key) * 10
-            else:
-                key = key.lower()
-                if key == 'w':
-                    left_direction, right_direction = 'forward', 'forward'
-                elif key == 's':
-                    left_direction, right_direction = 'backward', 'backward'
-                elif key == 'a':
-                    left_direction, right_direction = 'backward', 'forward'
-                elif key == 'd':
-                    left_direction, right_direction = 'forward', 'backward'
-                elif key == 'x':
-                    left_direction, right_direction = 'stop', 'stop'
-                elif key == 'q':
-                    print('quit')
-                    break
-                else:
-                    continue
+            if active_key and now - last_key_time > STOP_AFTER_SECONDS:
+                motor.stop()
+                print('stop', flush=True)
+                active_key = None
 
-            if left_direction == 'stop' and right_direction == 'stop':
-                rover.stop_motors()
-                print('stop')
-            else:
-                apply_drive(rover, left_direction, right_direction, speed)
-                print(f'{left_direction}/{right_direction} at {speed}%')
+            if key is None:
+                continue
+
+            if key == 'q':
+                print('quit', flush=True)
+                break
+            if key == 'x':
+                motor.stop()
+                print('stop', flush=True)
+                active_key = None
+                continue
+            if key not in COMMANDS:
+                continue
+
+            left_direction, right_direction, label = COMMANDS[key]
+            if key != active_key:
+                motor.drive(left_direction, right_direction, left_speed=SPEED, right_speed=SPEED)
+                print(f'{label}: left={left_direction}, right={right_direction}', flush=True)
+            active_key = key
+            last_key_time = now
     finally:
-        rover.stop_motors()
-        rover.close()
-        print('Motors stopped and GPIO cleaned up.')
+        if fd is not None and old_settings is not None:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        motor.cleanup()
+        print('motors stopped and GPIO cleaned up', flush=True)
 
     return 0
 
