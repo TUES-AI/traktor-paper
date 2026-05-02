@@ -56,6 +56,12 @@ RL-steps:
 Convert the states to adequate vector
 Trajectory
 
+What will be useful in the loss/reward:
+stuck detection -
+collision / near collision -
+vibration / instability -
+trajectory smoothness +
+
 
 Future work:
 Offline training with data recorded during inference/testing. Propose how exactly we will do that
