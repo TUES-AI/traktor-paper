@@ -1,6 +1,6 @@
 """
 2D Differential Drive Rover Coverage Navigation Environment
-Gymnasium environment with wall-following baseline and rich visualization.
+Gymnasium environment with reactive obstacle-avoidance agent and rich visualization.
 """
 
 import numpy as np
@@ -113,7 +113,7 @@ C_PATH        = (255, 150,  60)   # boustrophedon path polyline
 C_PATH_DOT    = (255, 200, 110)   # waypoint markers
 
 
-# ─── Obstacle generation ──────────────────────────────────────────────────────
+# ─── Obstacle generation ─────────────────────────────────────────────────────
 
 def generate_obstacles(n: int = 5, rng: np.random.Generator = None) -> list:
     if rng is None:
@@ -137,71 +137,6 @@ def generate_obstacles(n: int = 5, rng: np.random.Generator = None) -> list:
                 obstacles.append(rect)
                 break
     return obstacles
-
-
-# ─── Boustrophedon coverage path planning ───────────────────────────────────
-
-def boustrophedon_path(field_w: float = FIELD_W,
-                       field_h: float = FIELD_H,
-                       swath_width: float = WORKING_WIDTH,
-                       margin: float = 0.75) -> list:
-    """
-    Generate an ordered list of (x, y) waypoints that cover a rectangular field
-    with a boustrophedon (back-and-forth / ox-plough) pattern.
-
-    Algorithm:
-      1. Swaths run parallel to the longest field edge (so the rover does the
-         fewest U-turns possible — turning is the costly part).
-      2. Field is sliced into N parallel swaths spaced by `swath_width`,
-         offset by half a swath_width from each side so the first and last
-         swaths sit one half-width inside the field boundary.
-      3. The rover drives swath i end-to-end, then makes a headland U-turn to
-         the start of swath i+1. Direction alternates each swath.
-      4. The returned waypoint list is just the swath endpoints in execution
-         order: [A0, B0, B1, A1, A2, B2, ...]. The headland U-turn between
-         B0 and B1 is implicit — it is the local controller's job (the small
-         fast-adapting NN) to actually execute the turn.
-
-    The output is a flat list the high-level NN can stream as subgoals,
-    one swath segment at a time.
-    """
-    swaths_along_w = field_w >= field_h     # swaths along x-axis if W is longer
-    if swaths_along_w:
-        long_dim, short_dim = field_w, field_h
-    else:
-        long_dim, short_dim = field_h, field_w
-
-    # First / last swaths must sit far enough inside the field for the
-    # rover to fit AND for the side-sensor avoidance to NOT trigger as the
-    # rover drives along them — at least AGENT_RADIUS + 0.15 m of edge
-    # clearance, independent of swath_width.
-    edge_buffer = max(swath_width / 2.0, AGENT_RADIUS + 0.15)
-
-    n_swaths = max(1, int(np.ceil(short_dim / swath_width)))
-    if n_swaths == 1:
-        offsets = [short_dim / 2.0]
-    else:
-        span = short_dim - 2 * edge_buffer
-        offsets = [edge_buffer + i * span / (n_swaths - 1)
-                   for i in range(n_swaths)]
-
-    long_lo = margin
-    long_hi = long_dim - margin
-
-    waypoints = []
-    for i, perp in enumerate(offsets):
-        if i % 2 == 0:
-            a, b = long_lo, long_hi
-        else:
-            a, b = long_hi, long_lo
-        if swaths_along_w:
-            waypoints.append((a, perp))
-            waypoints.append((b, perp))
-        else:
-            waypoints.append((perp, a))
-            waypoints.append((perp, b))
-
-    return waypoints
 
 
 # ─── Ray casting ─────────────────────────────────────────────────────────────
@@ -343,12 +278,7 @@ class RoverCoverageEnv(gym.Env):
         self._trail     = deque(maxlen=TRAIL_LEN)
         self._total_reward  = 0.0
         self._collisions    = 0
-        self._map_ready     = False   # obstacles built yet?
-
-        # High-level boustrophedon plan — visual-only for now; the local
-        # adapting NN will eventually consume these waypoints as subgoals.
-        self.planned_path = boustrophedon_path()
-        self.show_path    = True
+        self._map_ready     = False
 
         # Reflexive bumper (deterministic safety layer)
         self.use_bumper        = True
@@ -370,7 +300,7 @@ class RoverCoverageEnv(gym.Env):
         A single-ray sim missed obstacles slightly off-axis from the
         sensor direction and the rover would clip them."""
         out = np.empty(3, dtype=np.float32)
-        cone = (-np.pi / 24, 0.0, +np.pi / 24)   # ±7.5° (HC-SR04 beam)
+        cone = (-np.pi / 6, -np.pi / 12, 0.0, np.pi / 12, np.pi / 6)  # ±30°, 5 rays
         for i, a in enumerate(SENSOR_ANGLES):
             d = min(ray_cast(self.x, self.y, self.theta + a + da, self.obstacles)
                     for da in cone)
@@ -653,15 +583,6 @@ class RoverCoverageEnv(gym.Env):
             p1  = self._w2s(*trail[i])
             pygame.draw.line(surf, col, p0, p1, 2)
 
-        # Planned boustrophedon path overlay (toggle with P)
-        if self.show_path and self.planned_path:
-            pts = [self._w2s(x, y) for x, y in self.planned_path]
-            for i in range(1, len(pts)):
-                pygame.draw.line(surf, C_PATH, pts[i - 1], pts[i], 2)
-            for i, p in enumerate(pts):
-                pygame.draw.circle(surf, C_PATH_DOT, p, 4)
-                pygame.draw.circle(surf, C_BG,       p, 2)
-
         # Sensor rays — order in SENSOR_ANGLES is [left, right, front]
         ray_colors = [C_RAY_L, C_RAY_R, C_RAY_F]
         for i, rel_angle in enumerate(SENSOR_ANGLES):
@@ -778,13 +699,9 @@ class RoverCoverageEnv(gym.Env):
         legend_dot(C_AGENT,       "Agent")
         legend_dot(C_VISITED_HI,  "Recently visited")
         legend_dot(C_VISITED_LO,  "Earlier visited")
-        legend_dot(C_OBSTACLE,    "Obstacle")
         legend_dot(C_RAY_L,       "Left sensor")
         legend_dot(C_RAY_R,       "Right sensor")
         legend_dot(C_RAY_F,       "Front sensor")
-        legend_dot(C_PATH_DOT,    "Boustrophedon path")
-        gap(2)
-        text("P = toggle path",     C_TEXT_DIM, "sm")
 
     def close(self):
         if self._screen is not None:
@@ -792,204 +709,162 @@ class RoverCoverageEnv(gym.Env):
             self._screen = None
 
 
-# ─── Wall-following Baseline Agent ───────────────────────────────────────────
-
-class WallFollowerAgent:
-    """
-    Deterministic wall-follower:
-      - Drive forward while front sensor is clear.
-      - On obstacle / wall ahead: pivot right in place.
-      - Use right sensor P-controller to hug the right wall at target distance.
-    """
-
-    def __init__(self,
-                 front_thresh: float = 0.18,
-                 right_target: float = 0.14,
-                 kp: float = 1.5):
-        self.front_thresh = front_thresh
-        self.right_target = right_target
-        self.kp = kp
-
-    def act(self, obs: np.ndarray) -> int:
-        _, right, front = obs   # match RoverAPI ordering: [left, right, front]
-        if front < self.front_thresh:
-            return _wheels_to_action(1, -1)
-        error = right - self.right_target
-        correction = int(np.clip(np.round(self.kp * error * 3), -1, 1))
-        if correction > 0:
-            return _wheels_to_action(1, 0)
-        elif correction < 0:
-            return _wheels_to_action(0, 1)
-        else:
-            return _wheels_to_action(1, 1)
-
-
 def _wheels_to_action(vl_sign: int, vr_sign: int) -> int:
     return WHEEL_CMDS.index(vl_sign) * 3 + WHEEL_CMDS.index(vr_sign)
 
 
-# ─── Boustrophedon waypoint follower (deterministic baseline) ────────────────
+# ─── Reactive Agent ───────────────────────────────────────────────────────────
 
-class BoustrophedonFollower:
-    """Drives the rover through `waypoints` in order using a P-controller on
-    heading. Has access to ground-truth pose — analogous to a real rover with
-    GPS + IMU. Used as the deterministic reference for cross-path / coverage
-    benchmarks.
+class ReactiveAgent:
+    """
+    Reactive rover with alternating turn preference and random drift.
 
-    The agent does its own obstacle avoidance using ultrasonic sensors —
-    well before the bumper would ever fire — so the trajectory is smooth and
-    the agent essentially never collides. This is the deliberately "nice"
-    deterministic baseline that the RL agent will be benchmarked against.
-    Where it falls short — sticking to a precomputed path it can't deviate
-    from, getting stuck against obstacles that completely block a swath —
-    is exactly where the RL agent is expected to do better.
+    Normal flow:
+      1. Forward (with occasional random drift to break straight-line loops).
+      2. Curve phase: one wheel stopped, arc toward preferred side.
+      3. Spin phase: hard in-place rotation when very close.
+      After each complete avoidance episode the preferred direction flips,
+      so consecutive turns alternate L-R-L-R instead of always the same way.
+
+    Escape flow (after STUCK_LIMIT consecutive collisions):
+      Reverse → spin ~180° → resume.
     """
 
-    # Avoidance triggers (metres). Sensor sits at the body centre; the
-    # rover bounding circle has radius AGENT_RADIUS ≈ 0.18 m. These
-    # thresholds give comfortable clearance before contact.
-    FRONT_CLEAR_DIST   = 0.50      # must be < (planner_margin - waypoint_tol)
-    SIDE_CLEAR_DIST    = 0.25      # (unused — kept for reference)
-    HEADING_SPIN_DEG   = 25.0
-    HEADING_CURVE_DEG  =  8.0
+    # Front thresholds
+    FRONT_CURVE  = 0.55
+    FRONT_SPIN   = 0.30
+    FRONT_CLEAR  = 0.70
 
-    def __init__(self, waypoints, waypoint_tol: float = WAYPOINT_TOL):
-        self.waypoints = list(waypoints)
-        self.tol       = waypoint_tol
-        self.idx       = 0
-        self.done      = False
-        self._wp_step  = 0
+    # Side thresholds
+    SIDE_CURVE   = 0.28
+    SIDE_SPIN    = 0.22
 
-    def reset(self):
-        self.idx       = 0
-        self.done      = False
-        self._wp_step  = 0
+    # Escape
+    STUCK_LIMIT  = 8
+    BACKUP_STEPS = 20
+    ESCAPE_SPINS = 60
 
-    def act(self, pose, obs) -> int:
-        """`pose` = (x, y, theta), `obs` = normalised [left, right, front]."""
-        if self.done or self.idx >= len(self.waypoints):
-            self.done = True
-            return _wheels_to_action(0, 0)
+    # Drift: every DRIFT_INTERVAL forward steps take one curved step
+    DRIFT_INTERVAL = 60
 
-        x, y, theta = pose
+    def __init__(self, seed: int = 0):
+        self._rng           = np.random.default_rng(seed)
+        self._state         = "forward"
+        self._preferred_dir = "left"   # flips after every avoidance episode
+        self._turn_dir      = "left"
+        self._was_avoiding  = False
+        self._stuck_count   = 0
+        self._escape_timer  = 0
+        self._escape_phase  = None
+        self._forward_steps = 0
+        self._drift_dir     = "left"
+        self._next_drift    = int(self._rng.integers(30, self.DRIFT_INTERVAL))
 
-        wx, wy = self.waypoints[self.idx]
-        dx, dy = wx - x, wy - y
-        dist   = float(np.hypot(dx, dy))
+    def _flip(self, d: str) -> str:
+        return "right" if d == "left" else "left"
 
-        if dist < self.tol:
-            self.idx     += 1
-            self._wp_step = 0
-            return self.act(pose, obs)
-
-        self._wp_step += 1
-        if self._wp_step > WP_TIMEOUT_STEPS:
-            self.idx     += 1
-            self._wp_step = 0
-            return self.act(pose, obs)
-
+    def act(self, obs: np.ndarray, collided: bool = False) -> int:
         left_m  = float(obs[0]) * SENSOR_MAX
         right_m = float(obs[1]) * SENSOR_MAX
         front_m = float(obs[2]) * SENSOR_MAX
 
-        # ── Reactive avoidance: priority order ────────────────────────────
-        # Pure rotation never collides (the body is a circle for collision),
-        # so we just steer away from whichever sensor sees something close.
-        if front_m < self.FRONT_CLEAR_DIST:
-            return _wheels_to_action(-1, 1) if left_m >= right_m else _wheels_to_action(1, -1)
-        if left_m < self.SIDE_CLEAR_DIST:
-            return _wheels_to_action(1, -1)              # spin away from left
-        if right_m < self.SIDE_CLEAR_DIST:
-            return _wheels_to_action(-1, 1)              # spin away from right
+        # ── Escape ────────────────────────────────────────────────
+        if collided:
+            self._stuck_count += 1
+        else:
+            self._stuck_count = 0
 
-        # ── Heading control toward the waypoint ───────────────────────────
-        target  = np.arctan2(dy, dx)
-        err_rad = (target - theta + np.pi) % (2 * np.pi) - np.pi
-        err_deg = abs(np.degrees(err_rad))
+        if self._stuck_count >= self.STUCK_LIMIT:
+            self._stuck_count  = 0
+            self._escape_phase = "backup"
+            self._escape_timer = self.BACKUP_STEPS
+            self._preferred_dir = self._flip(self._preferred_dir)
 
-        if err_deg > self.HEADING_SPIN_DEG:
-            return _wheels_to_action(-1, 1) if err_rad > 0 else _wheels_to_action(1, -1)
-        if err_deg > self.HEADING_CURVE_DEG:
-            return _wheels_to_action(0, 1) if err_rad > 0 else _wheels_to_action(1, 0)
-        return _wheels_to_action(1, 1)
+        if self._escape_phase == "backup":
+            self._escape_timer -= 1
+            if self._escape_timer <= 0:
+                self._escape_phase = "spin"
+                self._escape_timer = self.ESCAPE_SPINS
+                self._turn_dir = self._preferred_dir
+            return _wheels_to_action(-1, -1)
 
+        if self._escape_phase == "spin":
+            self._escape_timer -= 1
+            if self._escape_timer <= 0:
+                self._escape_phase = None
+                self._state = "forward"
+            return (_wheels_to_action(-1, 1) if self._turn_dir == "left"
+                    else _wheels_to_action(1, -1))
 
-# ─── Evaluation runner ───────────────────────────────────────────────────────
+        # ── Normal avoidance ──────────────────────────────────────
+        need_spin  = False
+        need_curve = False
+        # Start from preferred direction; sensor urgency can override.
+        turn_dir   = self._preferred_dir
 
-def evaluate(env: RoverCoverageEnv,
-             agent: BoustrophedonFollower,
-             max_steps: int = 30_000,
-             render: bool = True,
-             label: str = "Boustrophedon") -> dict:
-    """Run a deterministic agent on a fixed map and return coverage metrics.
+        if front_m < self.FRONT_SPIN:
+            need_spin = True
+            # sensor tie → use preferred; otherwise follow clearance
+            turn_dir  = self._preferred_dir if abs(left_m - right_m) < 0.1 \
+                        else ("left" if left_m >= right_m else "right")
+        elif front_m < self.FRONT_CURVE:
+            need_curve = True
+            turn_dir   = self._preferred_dir if abs(left_m - right_m) < 0.1 \
+                         else ("left" if left_m >= right_m else "right")
 
-    The deterministic agent is expected to handle obstacle avoidance itself,
-    so the env's safety override is disabled — any collision counted here is
-    a genuine algorithm failure, not a bumper save."""
-    obs, _ = env.reset(seed=0)
-    env.use_bumper = False
-    info: dict = {}
+        if left_m < self.SIDE_SPIN:
+            need_spin = True
+            turn_dir  = "right"
+        elif left_m < self.SIDE_CURVE:
+            need_curve = True
+            turn_dir  = "right"
 
-    if render:
-        env.render()
+        if right_m < self.SIDE_SPIN:
+            need_spin = True
+            turn_dir  = "left"
+        elif right_m < self.SIDE_CURVE:
+            need_curve = True
+            turn_dir  = "left"
 
-    for _ in range(max_steps):
-        if render:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    break
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_q:
-                    break
+        now_avoiding = need_spin or need_curve
 
-        action = agent.act((env.x, env.y, env.theta), obs)
-        obs, _, _, _, info = env.step(action)
+        # Flip preferred direction when an avoidance episode ends
+        if self._was_avoiding and not now_avoiding:
+            self._preferred_dir = self._flip(self._preferred_dir)
+            self._drift_dir     = self._preferred_dir
+            self._next_drift    = int(self._rng.integers(30, self.DRIFT_INTERVAL))
+            self._forward_steps = 0
+        self._was_avoiding = now_avoiding
 
-        if render:
-            env.render()
-        if agent.done:
-            break
+        if need_spin:
+            self._state    = "spin"
+            self._turn_dir = turn_dir
+        elif need_curve:
+            self._state    = "curve"
+            self._turn_dir = turn_dir
+        else:
+            self._state = "forward"
 
-    metrics = {
-        "label":            label,
-        "coverage_pct":     info.get("coverage", 0.0) * 100,
-        "cross_path_pct":   env.cross_path_pct(),
-        "steps":            info.get("steps", 0),
-        "collisions":       env._collisions,
-        "bumper_triggers":  env._bumper_triggers,
-        "waypoints_done":   agent.idx,
-        "waypoints_total":  len(agent.waypoints),
-        "unique_cells":     int(env.visited.sum()),
-        "total_cells":      GRID_ROWS * GRID_COLS,
-        "cell_entries":     env._cell_entries,
-    }
+        # ── Actions ───────────────────────────────────────────────
+        if self._state == "forward":
+            self._forward_steps += 1
+            # Periodic random drift: one curved step to nudge the heading
+            if self._forward_steps >= self._next_drift:
+                self._forward_steps = 0
+                self._next_drift = int(self._rng.integers(30, self.DRIFT_INTERVAL))
+                return (_wheels_to_action(0, 1) if self._drift_dir == "left"
+                        else _wheels_to_action(1, 0))
+            return _wheels_to_action(1, 1)
 
-    print(f"\n{'─'*60}")
-    print(f"  {label}  evaluation")
-    print(f"{'─'*60}")
-    print(f"  Coverage (full exploratory) : {metrics['coverage_pct']:6.2f} %  "
-          f"({metrics['unique_cells']} / {metrics['total_cells']} cells)")
-    print(f"  Cross-path                  : {metrics['cross_path_pct']:6.2f} %  "
-          f"({metrics['cell_entries']} entries, "
-          f"{metrics['cell_entries'] - metrics['unique_cells']} revisits)")
-    print(f"  Waypoints reached           : {metrics['waypoints_done']:4d} / {metrics['waypoints_total']}")
-    print(f"  Steps                       : {metrics['steps']}")
-    print(f"  Collisions                  : {metrics['collisions']}")
-    print(f"  Bumper triggers             : {metrics['bumper_triggers']}")
-    print(f"{'─'*60}\n")
-    return metrics
+        if self._turn_dir == "left":
+            return (_wheels_to_action(0, 1) if self._state == "curve"
+                    else _wheels_to_action(-1, 1))
+        else:
+            return (_wheels_to_action(1, 0) if self._state == "curve"
+                    else _wheels_to_action(1, -1))
 
 
 # ─── WASD key → action mapping ───────────────────────────────────────────────
-#
-#  W        — forward straight   (+1, +1)
-#  S        — reverse straight   (-1, -1)
-#  A        — spin left          (-1, +1)
-#  D        — spin right         (+1, -1)
-#  W + A    — curve left         ( 0, +1)
-#  W + D    — curve right        (+1,  0)
-#  no key   — stop               ( 0,  0)
-#
-# Combos are checked first so W+A doesn't accidentally fire W alone.
 
 def _wasd_action(keys) -> int:
     w = keys[pygame.K_w]
@@ -997,52 +872,44 @@ def _wasd_action(keys) -> int:
     a = keys[pygame.K_a]
     d = keys[pygame.K_d]
     if w and a:
-        return _wheels_to_action(0,  1)   # curve left
+        return _wheels_to_action(0,  1)
     if w and d:
-        return _wheels_to_action(1,  0)   # curve right
+        return _wheels_to_action(1,  0)
     if w:
-        return _wheels_to_action(1,  1)   # straight forward
+        return _wheels_to_action(1,  1)
     if s:
-        return _wheels_to_action(-1, -1)  # straight reverse
+        return _wheels_to_action(-1, -1)
     if a:
-        return _wheels_to_action(-1,  1)  # spin left
+        return _wheels_to_action(-1,  1)
     if d:
-        return _wheels_to_action(1,  -1)  # spin right
-    return _wheels_to_action(0, 0)        # stop
-
-
+        return _wheels_to_action(1,  -1)
+    return _wheels_to_action(0, 0)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
-def _run_eval(headless: bool = False):
-    """Run the deterministic boustrophedon follower and print metrics."""
-    render_mode = None if headless else "human"
-    env = RoverCoverageEnv(render_mode=render_mode, n_obstacles=5)
-    agent = BoustrophedonFollower(env.planned_path)
-    return evaluate(env, agent, render=not headless)
-
-
 def main():
-    if "--eval" in sys.argv:
-        _run_eval(headless=("--headless" in sys.argv))
-        return
+    mode = sys.argv[1] if len(sys.argv) > 1 else "manual"
 
     print("=" * 60)
-    print("  Rover Coverage — WASD manual control")
-    print("  W/S = forward/reverse   A/D = spin   W+A/W+D = curve")
-    print("  R = rebuild map         P = toggle planned path")
-    print("  B = toggle bumper       Q / close = quit")
-    print("  --eval flag runs the deterministic boustrophedon baseline.")
+    if mode == "auto":
+        print("  Rover Coverage — Reactive agent (auto)")
+    else:
+        print("  Rover Coverage — WASD manual control")
+        print("  W/S = forward/reverse   A/D = spin   W+A/W+D = curve")
+    print("  R = reset   Q / close = quit")
     print("=" * 60)
 
-    env = RoverCoverageEnv(render_mode="human", n_obstacles=5)
-    env.reset(seed=0)
-    env.render()   # initialises pygame before the event loop
+    env = RoverCoverageEnv(render_mode="human")
+    obs, _ = env.reset(seed=0)
+    env.use_bumper = False   # reactive agent handles avoidance itself
+    env.render()
+
+    agent = ReactiveAgent() if mode == "auto" else None
+    info: dict = {}
 
     running = True
     while running:
-        # ── event handling ────────────────────────────────────────
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -1050,33 +917,25 @@ def main():
                 if event.key == pygame.K_q:
                     running = False
                 elif event.key == pygame.K_r:
-                    # R = wipe the visited grid and rebuild the map from scratch
                     env._map_ready = False
-                    env.reset()
-                    print("  Map reset.")
-                elif event.key == pygame.K_p:
-                    env.show_path = not env.show_path
-                    print(f"  Planned path overlay: "
-                          f"{'on' if env.show_path else 'off'}")
-                elif event.key == pygame.K_b:
-                    env.use_bumper = not env.use_bumper
-                    print(f"  Bumper safety reflex: "
-                          f"{'on' if env.use_bumper else 'off'}")
+                    obs, _ = env.reset()
+                    if agent:
+                        agent.__init__()
+                    print("  Reset.")
 
         if not running:
             break
 
-        # ── pick action from held keys ────────────────────────────
-        action = _wasd_action(pygame.key.get_pressed())
+        if agent:
+            action = agent.act(obs, collided=info.get("collided", False))
+        else:
+            action = _wasd_action(pygame.key.get_pressed())
 
-        # ── step ──────────────────────────────────────────────────
-        step_result = env.step(action)
-        info = step_result[4]
+        obs, _, _, _, info = env.step(action)
 
         if info.get("collided"):
-            print(f"  Collision — respawned  "
-                  f"(total collisions: {info['collisions']}  "
-                  f"coverage: {info['coverage']*100:.1f}%)")
+            print(f"  Collision! total={info['collisions']}  "
+                  f"coverage={info['coverage']*100:.1f}%")
 
         env.render()
 
