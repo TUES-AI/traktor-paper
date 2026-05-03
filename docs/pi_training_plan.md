@@ -91,6 +91,7 @@
 3. **Clamped action in buffer vs raw SAC action** — directly tests the corruption hypothesis. Compare Q-function stability and novel places found across identical step counts
 4. **Camera + sensors vs sensors only** — sensors-only policy cannot compute RND at all, making this the clearest possible control condition
 
+
 ### Primary evaluation metric — novel places found
 
 Coverage % is not usable in the real world without ground truth position (GPS/odometry). Instead:
