@@ -33,8 +33,8 @@ def main():
             print(
                 ' | '.join(
                     [
-                        format_distance('S1', distances[1]),
-                        format_distance('S2', distances[2]),
+                        format_distance('right', distances[1]),
+                        format_distance('left', distances[2]),
                         format_distance('S3', distances[3]),
                     ]
                 )

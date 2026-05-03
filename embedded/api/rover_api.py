@@ -35,6 +35,7 @@ class RoverAPI:
         ultrasonic1_pins=ULTRASONIC_1_PINS,
         ultrasonic2_pins=ULTRASONIC_2_PINS,
         ultrasonic3_pins=ULTRASONIC_3_PINS,
+        camera_enabled=True,
     ):
         self.gps = GPSProvider(port=gps_port, baud=gps_baud, fallback_file=gps_fallback_file)
         self.ultrasonic = UltrasonicArray(
@@ -54,7 +55,7 @@ class RoverAPI:
             right_pwm_pin=motor_pwm_pins[1],
             pwm_frequency_hz=motor_pwm_frequency_hz,
         )
-        self.camera = PiCam2FrameDriver()
+        self.camera = PiCam2FrameDriver() if camera_enabled else None
 
     def get_gps_values(self, timeout_seconds=2.0, allow_fallback=True):
         return self.gps.get_position(timeout_seconds=timeout_seconds, allow_fallback=allow_fallback)
@@ -85,6 +86,8 @@ class RoverAPI:
         return self.motor.stop()
 
     def getframe(self):
+        if self.camera is None:
+            raise RuntimeError('Camera is disabled for this RoverAPI instance')
         return self.camera.take_picture()
 
     def take_picture(self):
@@ -97,4 +100,5 @@ class RoverAPI:
         self.gps.close()
         self.motor.cleanup()
         self.ultrasonic.cleanup()
-        self.camera.close()
+        if self.camera is not None:
+            self.camera.close()

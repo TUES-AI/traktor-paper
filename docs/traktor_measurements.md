@@ -1,5 +1,9 @@
 # Traktor Measurement Sheet
 
+Status: superseded by `embedded/TRAKTOR_DIMENSIONS.md` for actual current dimensions.
+
+This file is only the original blank measurement template.
+
 Goal: measure the real rover once, then use the same numbers in visualization, simulation, sensor projection, and map display.
 
 Use millimeters for distance measurements. Use degrees for sensor angles.

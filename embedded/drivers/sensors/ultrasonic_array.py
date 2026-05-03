@@ -24,9 +24,9 @@ class UltrasonicArray:
 
     def _normalize_sensor_id(self, sensor_id):
         value = str(sensor_id).strip().lower()
-        if value in ('1', 's1', 'sensor1', 'left'):
+        if value in ('1', 's1', 'sensor1', 'right'):
             return 1
-        if value in ('2', 's2', 'sensor2', 'right'):
+        if value in ('2', 's2', 'sensor2', 'left'):
             return 2
         if value in ('3', 's3', 'sensor3', 'front', 'middle', 'center'):
             return 3
