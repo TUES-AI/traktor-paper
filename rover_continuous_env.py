@@ -21,7 +21,7 @@ import numpy as np
 from gymnasium import spaces
 from rover_coverage_env import (
     RoverCoverageEnv, MAX_WHEEL_SPEED, SENSOR_MAX,
-    ReactiveAgent, _wheels_to_action,
+    _wheels_to_action,
 )
 
 
@@ -53,65 +53,17 @@ class ContinuousRoverEnv(RoverCoverageEnv):
 
     def step(self, action):
         curvature, speed = float(action[0]), float(action[1])
-        vl, vr = guide_to_wheels(curvature, speed)
+        vl_cmd, vr_cmd = guide_to_wheels(curvature, speed)
 
-        # Safety clamp: same reflex as parent, translated to (vl, vr)
         bumper_fired = False
         if self.use_bumper:
             override = self._safety_override()
             if override is not None:
-                vl, vr = self._action_to_wheels[override]
+                vl_cmd, vr_cmd = self._action_to_wheels[override]
                 bumper_fired = True
                 self._bumper_triggers += 1
 
-        # Physics — copied from parent step() with vl,vr already resolved
-        from rover_coverage_env import diff_drive_step, in_collision, R_NEW_CELL, R_STEP, R_COLLISION
-        nx, ny, ntheta = diff_drive_step(self.x, self.y, self.theta, vl, vr)
-        obs_list = self.obstacles
-
-        if not in_collision(nx, ny, ntheta, obs_list):
-            self.x, self.y, self.theta = nx, ny, ntheta
-            collided = False
-        elif not in_collision(nx, self.y, ntheta, obs_list):
-            self.x, self.theta = nx, ntheta
-            collided = True
-        elif not in_collision(self.x, ny, ntheta, obs_list):
-            self.y, self.theta = ny, ntheta
-            collided = True
-        elif not in_collision(self.x, self.y, ntheta, obs_list):
-            self.theta = ntheta
-            collided = True
-        else:
-            collided = True
-
-        if collided:
-            self._collisions += 1
-
-        r, c = self._cell(self.x, self.y)
-        if (r, c) != self._prev_cell:
-            self._cell_entries += 1
-            self._prev_cell = (r, c)
-
-        unique_before = int(self.visited.sum())
-        self._mark_swept(self.step_count)
-        new_cells = int(self.visited.sum()) - unique_before
-        reward = R_NEW_CELL * new_cells + R_STEP
-        if collided:
-            reward += R_COLLISION
-
-        self._trail.append((self.x, self.y))
-        self._total_reward += reward
-        self.step_count += 1
-
-        info = {
-            "coverage":     self._coverage(),
-            "collided":     collided,
-            "steps":        self.step_count,
-            "collisions":   self._collisions,
-            "bumper_fired": bumper_fired,
-            "cross_path_pct": self.cross_path_pct(),
-        }
-        return self._get_obs(), reward, False, False, info
+        return self._physics_and_reward(vl_cmd, vr_cmd, bumper_fired)
 
 
 # ── Continuous reactive agent ─────────────────────────────────────────────────

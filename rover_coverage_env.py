@@ -65,9 +65,21 @@ WAYPOINT_TOL      = 0.25    # arrived when within this many metres
 WP_TIMEOUT_STEPS  = 300     # give up on a waypoint blocked by an obstacle
 
 # Rewards
-R_NEW_CELL  =  1.0
-R_COLLISION = -10.0
-R_STEP      = -0.01
+# Only signals available on real hardware:
+#   R_MOVE     — wheel-encoder / IMU displacement (odometry)
+#   R_STEP     — time pressure so the agent doesn't idle
+#   R_COLLISION — bumper / full-wedge contact
+#   R_STUCK    — no progress for STUCK_LIMIT steps → penalty + respawn
+# R_NEW_CELL is intentionally absent: the real rover has no coverage-grid oracle.
+# The VMM variant receives an additional novelty reward in train_sac.py's wrapper.
+R_COLLISION   = -10.0
+R_STEP        = -0.02  # mild time pressure
+R_MOVE        =  2.0   # reward per metre of displacement (odometry signal)
+R_STUCK       = -50.0  # strong enough to trigger escape / respawn
+STUCK_LIMIT   =  200   # steps without a new cell before stuck penalty + respawn (~10 s)
+
+# Wheel inertia — commanded speed takes a few steps to reach (first-order lag)
+INERTIA_ALPHA = 0.35    # 0 = frozen, 1 = instant response; ~5 steps to converge
 
 WHEEL_CMDS = [-1, 0, 1]
 
@@ -247,11 +259,13 @@ class RoverCoverageEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
 
     def __init__(self, render_mode: Optional[str] = None,
-                 n_obstacles: int = 5, seed: Optional[int] = None):
+                 n_obstacles: int = 5, seed: Optional[int] = None,
+                 obstacles: Optional[list] = None):
         super().__init__()
         self.render_mode = render_mode
         self.n_obstacles = n_obstacles
         self._seed = seed
+        self._fixed_obstacles = obstacles  # if set, skip generation and use this
 
         self.action_space = spaces.Discrete(9)
         self._action_to_wheels = [
@@ -288,6 +302,11 @@ class RoverCoverageEnv(gym.Env):
         # per-step occupancy, so cross-path stays meaningful at any speed.
         self._cell_entries = 0
         self._prev_cell    = (-1, -1)
+
+        # Wheel velocity state (inertia) and stuck detector
+        self._vl = 0.0
+        self._vr = 0.0
+        self._steps_since_new_cell = 0
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -375,6 +394,8 @@ class RoverCoverageEnv(gym.Env):
         self.theta = (self.theta + np.pi) % (2 * np.pi) - np.pi
         self._trail.clear()
         self.done = False
+        self._vl = self._vr = 0.0
+        self._steps_since_new_cell = 0
 
     # ── Gymnasium API ─────────────────────────────────────────────────────────
 
@@ -385,7 +406,8 @@ class RoverCoverageEnv(gym.Env):
 
         # Build the map only once; subsequent reset() calls just respawn the agent
         if not self._map_ready:
-            self.obstacles  = generate_obstacles(self.n_obstacles, self._rng)
+            self.obstacles  = (list(self._fixed_obstacles) if self._fixed_obstacles is not None
+                               else generate_obstacles(self.n_obstacles, self._rng))
             self.visited    = np.zeros((GRID_ROWS, GRID_COLS), dtype=bool)
             self.visit_age  = np.full((GRID_ROWS, GRID_COLS), -1, dtype=np.int32)
             self.step_count = 0
@@ -406,20 +428,112 @@ class RoverCoverageEnv(gym.Env):
         return self._get_obs(), {}
 
     def _safety_override(self):
-        """Tracky-style deterministic reflex (see embedded/ppo_rover.py).
-        Priority: front → back up; left → spin right; right → spin left.
-        Returns the override action, or None when no threshold is crossed."""
-        # Clean ray-casts (no sensor noise) — the reflex must be reliable.
-        f = ray_cast(self.x, self.y, self.theta,                  self.obstacles)
-        l = ray_cast(self.x, self.y, self.theta + np.pi / 2,      self.obstacles)
-        r = ray_cast(self.x, self.y, self.theta - np.pi / 2,      self.obstacles)
-        if f < FRONT_SAFETY_DIST:
+        """Full-circle safety reflex: sweeps 8 rays every 45° to catch diagonal
+        approaches that the 3-sensor bumper misses at corners and angled walls.
+
+        Escape logic: find the closest obstacle direction, then spin/back away
+        from it.  Priority: front hemisphere → back up; left → spin right;
+        right → spin left; rear → spin (pick side with most clearance)."""
+        angles = np.linspace(-np.pi, np.pi, 9, endpoint=False)   # 8 rays × 45°
+        dists  = [ray_cast(self.x, self.y, self.theta + a, self.obstacles)
+                  for a in angles]
+
+        min_d   = min(dists)
+        min_idx = int(np.argmin(dists))
+        min_ang = angles[min_idx]   # angle relative to heading of nearest obstacle
+
+        if min_d >= FRONT_SAFETY_DIST:
+            return None
+
+        # Front hemisphere (±90°): back up
+        if abs(min_ang) <= np.pi / 2:
             return ACT_BACKWARD
-        if l < SIDE_SAFETY_DIST:
+
+        # Left side: spin right to escape
+        if min_ang > 0:
             return ACT_SPIN_RIGHT
-        if r < SIDE_SAFETY_DIST:
-            return ACT_SPIN_LEFT
-        return None
+
+        # Right side: spin left to escape
+        return ACT_SPIN_LEFT
+
+    def _physics_and_reward(self, vl_cmd: float, vr_cmd: float,
+                             bumper_fired: bool):
+        """Shared physics + reward kernel used by both discrete and continuous step().
+
+        Applies first-order wheel inertia, resolves soft-contact collision,
+        updates coverage, computes reward (new cells + displacement − step cost),
+        runs stuck detector (R_STUCK + respawn after STUCK_LIMIT steps without
+        a new cell), and returns the full gymnasium step tuple."""
+        # Wheel inertia: actual speed lags commanded speed.
+        # Bypass inertia when the safety bumper fires — the reflex must be instant.
+        if bumper_fired:
+            self._vl, self._vr = vl_cmd, vr_cmd
+        else:
+            self._vl += INERTIA_ALPHA * (vl_cmd - self._vl)
+            self._vr += INERTIA_ALPHA * (vr_cmd - self._vr)
+
+        x0, y0 = self.x, self.y
+        nx, ny, ntheta = diff_drive_step(self.x, self.y, self.theta,
+                                         self._vl, self._vr)
+
+        obs_list = self.obstacles
+        if not in_collision(nx, ny, ntheta, obs_list):
+            self.x, self.y, self.theta = nx, ny, ntheta
+            collided = False
+        elif not in_collision(nx, self.y, ntheta, obs_list):
+            self.x, self.theta = nx, ntheta
+            collided = False   # sliding along wall — not a true collision
+        elif not in_collision(self.x, ny, ntheta, obs_list):
+            self.y, self.theta = ny, ntheta
+            collided = False   # sliding along wall — not a true collision
+        elif not in_collision(self.x, self.y, ntheta, obs_list):
+            self.theta = ntheta
+            collided = False   # rotation only — not a true collision
+        else:
+            collided = True    # fully wedged: rover cannot move at all
+
+        if collided:
+            self._collisions += 1
+
+        r, c = self._cell(self.x, self.y)
+        if (r, c) != self._prev_cell:
+            self._cell_entries += 1
+            self._prev_cell = (r, c)
+
+        unique_before = int(self.visited.sum())
+        self._mark_swept(self.step_count)
+        new_cells = int(self.visited.sum()) - unique_before
+
+        displacement = float(np.hypot(self.x - x0, self.y - y0))
+        reward = R_MOVE * displacement + R_STEP
+        if collided:
+            reward += R_COLLISION
+
+        # Cross-path penalty: moving over already-visited ground with no new cells.
+        # Sim: checked directly from the visited grid.
+        # Stuck / spinning detector: no new cell for STUCK_LIMIT steps → penalty + respawn
+        if new_cells > 0:
+            self._steps_since_new_cell = 0
+        else:
+            self._steps_since_new_cell += 1
+        if self._steps_since_new_cell >= STUCK_LIMIT:
+            reward += R_STUCK
+            self._respawn()   # teleport out; map and visited grid are preserved
+
+        self._trail.append((self.x, self.y))
+        self._total_reward += reward
+        self.step_count    += 1
+
+        info = {
+            "coverage":       self._coverage(),
+            "collided":       collided,
+            "steps":          self.step_count,
+            "collisions":     self._collisions,
+            "bumper_fired":   bumper_fired,
+            "bumper_total":   self._bumper_triggers,
+            "cross_path_pct": self.cross_path_pct(),
+        }
+        return self._get_obs(), reward, False, False, info
 
     def step(self, action: int):
         bumper_fired = False
@@ -430,59 +544,8 @@ class RoverCoverageEnv(gym.Env):
                 bumper_fired = True
                 self._bumper_triggers += 1
 
-        vl, vr = self._action_to_wheels[action]
-        nx, ny, ntheta = diff_drive_step(self.x, self.y, self.theta, vl, vr)
-
-        # Soft contact: try the full move first; if it would intersect a wall
-        # or obstacle, peel off motion components one at a time so the box
-        # body slides along whatever it is touching instead of teleporting.
-        obs_list = self.obstacles
-        if not in_collision(nx, ny, ntheta, obs_list):
-            self.x, self.y, self.theta = nx, ny, ntheta
-            collided = False
-        elif not in_collision(nx, self.y, ntheta, obs_list):
-            # blocked in y: slide along the x axis (e.g. along a horizontal wall)
-            self.x, self.theta = nx, ntheta
-            collided = True
-        elif not in_collision(self.x, ny, ntheta, obs_list):
-            self.y, self.theta = ny, ntheta
-            collided = True
-        elif not in_collision(self.x, self.y, ntheta, obs_list):
-            # translation blocked but the rover can still rotate in place
-            self.theta = ntheta
-            collided = True
-        else:
-            # fully wedged — no update at all
-            collided = True
-
-        if collided:
-            self._collisions += 1
-
-        r, c = self._cell(self.x, self.y)
-        if (r, c) != self._prev_cell:
-            self._cell_entries += 1
-            self._prev_cell     = (r, c)
-        unique_before = int(self.visited.sum())
-        self._mark_swept(self.step_count)
-        new_cells = int(self.visited.sum()) - unique_before
-        reward = R_NEW_CELL * new_cells + R_STEP
-        if collided:
-            reward += R_COLLISION
-
-        self._trail.append((self.x, self.y))
-        self._total_reward += reward
-        self.step_count    += 1
-
-        info = {
-            "coverage":      self._coverage(),
-            "collided":      collided,
-            "steps":         self.step_count,
-            "collisions":    self._collisions,
-            "bumper_fired":  bumper_fired,
-            "bumper_total":  self._bumper_triggers,
-            "cross_path_pct": self.cross_path_pct(),
-        }
-        return self._get_obs(), reward, False, False, info
+        vl_cmd, vr_cmd = self._action_to_wheels[action]
+        return self._physics_and_reward(vl_cmd, vr_cmd, bumper_fired)
 
     def cross_path_pct(self) -> float:
         """Fraction of cell *entries* that revisited an already-visited cell.
