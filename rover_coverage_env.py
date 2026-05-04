@@ -52,8 +52,8 @@ SENSOR_NOISE_STD  = 0.005   # ±0.5 cm Gaussian noise per read
 # crosses a hard threshold the env unconditionally hijacks the action,
 # regardless of what the policy commanded. The robot doesn't trust the
 # policy to never crash. Thresholds match Tracky verbatim (cm → m).
-FRONT_SAFETY_DIST = 0.25    # m (Tracky FRONT_SAFETY_CM = 25.0)
-SIDE_SAFETY_DIST  = 0.15    # m (Tracky SAFETY_CM       = 15.0)
+FRONT_SAFETY_DIST = 0.28    # m — AGENT_RADIUS=0.18 + one step clearance
+SIDE_SAFETY_DIST  = 0.22    # m — AGENT_RADIUS=0.18 + minimal clearance
 
 # Action indices used by the safety override (in our (vl, vr) enumeration)
 ACT_BACKWARD   = 0   # (-1, -1) full reverse
@@ -72,7 +72,7 @@ WP_TIMEOUT_STEPS  = 300     # give up on a waypoint blocked by an obstacle
 #   R_STUCK    — no progress for STUCK_LIMIT steps → penalty + respawn
 # R_NEW_CELL is intentionally absent: the real rover has no coverage-grid oracle.
 # The VMM variant receives an additional novelty reward in train_sac.py's wrapper.
-R_COLLISION   = -10.0
+R_COLLISION   = -0.5
 R_STEP        = -0.02  # mild time pressure
 R_MOVE        =  2.0   # reward per metre of displacement (odometry signal)
 R_STUCK       = -50.0  # strong enough to trigger escape / respawn
