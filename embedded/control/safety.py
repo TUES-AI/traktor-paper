@@ -19,6 +19,7 @@ class SafetyConfig:
     stuck_min_yaw_change_deg: float = 2.0
     stuck_min_accel_delta_g: float = 0.025
     ultrasonic_timeout_seconds: float = 0.03
+    no_echo_is_clear: bool = True
 
 
 class SafetyController:
@@ -57,8 +58,19 @@ class SafetyController:
         distances = distances or self.read_distances()
         front = distances['front']
         threshold = self.front_stop_cm(speed_pct)
-        # Fail-safe: HC-SR04 can return no echo when an object is too close or badly angled.
-        return front is not None and front >= threshold, front, threshold
+        if front is None:
+            return self.config.no_echo_is_clear, front, threshold
+        return front >= threshold, front, threshold
+
+    def is_turn_safe(self, direction, distances=None):
+        distances = distances or self.read_distances()
+        side_name = 'left' if direction == 'left' else 'right'
+        side_cm = distances[side_name]
+        if side_cm is None:
+            return self.config.no_echo_is_clear, side_cm, f'{side_name}_no_echo'
+        if side_cm < self.config.side_turn_clear_cm:
+            return False, side_cm, f'{side_name}_blocked'
+        return True, side_cm, f'{side_name}_clear'
 
     def freer_side(self, distances=None):
         distances = distances or self.read_distances()
@@ -101,12 +113,9 @@ class SafetyController:
                 front_clear = distances['front'] is not None and distances['front'] >= self.config.front_clear_to_resume_cm
                 if front_clear:
                     return {'reason': 'clear', 'yaw_deg': yaw, **distances}
-                turn_side = 'left' if direction == 'left' else 'right'
-                turn_side_cm = distances[turn_side]
-                if turn_side_cm is None:
-                    return {'reason': 'turn_side_no_echo', 'yaw_deg': yaw, **distances}
-                if turn_side_cm < self.config.side_turn_clear_cm:
-                    return {'reason': 'turn_side_blocked', 'yaw_deg': yaw, **distances}
+                turn_safe, _, turn_reason = self.is_turn_safe(direction, distances)
+                if not turn_safe:
+                    return {'reason': turn_reason, 'yaw_deg': yaw, **distances}
                 if self.imu is not None:
                     now = time.monotonic()
                     gyro_z = self.imu.read_all()['gyro']['z'] - self._gyro_z_bias

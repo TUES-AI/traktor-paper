@@ -31,12 +31,20 @@ sensor 3 = front
 
 Important: `None` / `NO_ECHO` is treated as unsafe for forward motion because very close or angled obstacles can produce no echo.
 
+Motion note: avoid small repeated motor start/stop ticks. The tracks need continuous motion to overcome static friction, so guide executors should update motor commands while moving and stop only for safety or completion.
+
 ## Main Scripts
 
 Manual driving:
 
 ```bash
 ssh -t rover 'cd /home/yasen/traktor-paper; python3 embedded/scripts/wasd_control.py'
+```
+
+Interactive preset motion sequences:
+
+```bash
+ssh -t rover 'cd /home/yasen/traktor-paper; python3 embedded/scripts/preset_sequences.py'
 ```
 
 Reactive safety-first roaming:
@@ -55,6 +63,38 @@ SAC-style guide execution through the safety layer:
 
 ```bash
 ssh rover 'cd /home/yasen/traktor-paper; PYTHONUNBUFFERED=1 python3 embedded/scripts/execute_sac_guide.py --preset avoid_left'
+```
+
+Continuous left-side obstacle bypass shape:
+
+```bash
+ssh rover 'cd /home/yasen/traktor-paper; PYTHONUNBUFFERED=1 python3 embedded/scripts/left_bypass_shape.py'
+```
+
+Two-vector SAC-style local guide with CSV logging:
+
+```bash
+ssh rover 'cd /home/yasen/traktor-paper; PYTHONUNBUFFERED=1 python3 embedded/scripts/execute_two_vector_guide.py --theta1 35 --d1 35 --theta2 -55 --d2 70'
+```
+
+Draw two target points locally and execute them:
+
+```bash
+/Volumes/SSD/v/py/bin/python tools/draw_two_vector_guide.py
+```
+
+Persistent WebSocket control UI with telemetry, WASD, and guide execution:
+
+```bash
+/Volumes/SSD/v/py/bin/python tools/rover_ws_control.py
+```
+
+This starts `embedded/scripts/rover_ws_server.py` on the Pi over SSH, then uses a persistent WebSocket connection instead of launching new SSH commands for every action.
+
+More robust plain TCP version:
+
+```bash
+/Volumes/SSD/v/py/bin/python tools/rover_tcp_control.py --restart-server
 ```
 
 Forward/spin calibration:

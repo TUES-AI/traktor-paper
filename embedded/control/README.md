@@ -17,6 +17,8 @@ Higher-level code should output intent, not raw GPIO:
 
 The safety layer is responsible for deciding whether that intent may be executed, interrupted, or replaced by recovery behavior.
 
+Important chassis note: the tractor does not respond well to tiny stop/start motor pulses. Track geometry and static friction mean the wheels need a short continuous drive interval to break loose. Executors should keep motors running continuously between safety checks and only stop for blocked/complete/recovery states.
+
 ## Safety Contract
 
 - Forward motion is blocked if front ultrasonic is below the speed-scaled threshold.
