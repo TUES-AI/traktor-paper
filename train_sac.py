@@ -42,7 +42,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from apartment_env import ApartmentContinuousEnv, generate_apartment
 # -- Config ---------------------------------------------------------------------
 SEEDS         = [42]             # one furniture layout per seed; results averaged
-TRAIN_STEPS   = 350_000
+TRAIN_STEPS   = 100_000
 EVAL_EVERY    = 5_000
 BUFFER_SIZE   = 100_000
 BATCH_SIZE    = 1024
@@ -75,12 +75,12 @@ class SafetyPenaltyWrapper(gym.Wrapper):
 
 # -- VMM observation wrapper ----------------------------------------------------
 
-_VMM_NOVELTY_SCALE = 0.40  # strong enough to pull policy toward unexplored rooms
+_VMM_NOVELTY_SCALE = 0.60  # stronger pull toward unexplored rooms
 _RND_INPUT_DIM     = 7    # [left, right, front, sin(theta), cos(theta), x/W, y/H]
 _RND_HIDDEN        = 64
 _RND_OUTPUT_DIM    = 64
-_RND_LR            = 3e-5  # slower fit keeps novelty signal alive longer
-_RND_WARMUP        = 200  # more warmup so Welford mean stabilises before bonuses kick in
+_RND_LR            = 5e-6  # very slow fit — prevents predictor overfitting, keeps novelty alive
+_RND_WARMUP        = 100  # kick in sooner so bonus drives early exploration
 
 
 class _RNDTarget(torch.nn.Module):
@@ -405,13 +405,13 @@ class TrackCallback(BaseCallback):
                 "collisions":   inner._collisions,
                 "bumper_total": inner._bumper_triggers,
             }
-            self.checkpoints.append((self.num_timesteps, m))
+            self.checkpoints.append((inner.step_count, m))
 
             vmm = self._vmm_wrapper()
             postfix = {"cov": f"{m['coverage']:.1f}%", "col": m["collisions"], "bumper": m["bumper_total"]}
             if vmm is not None:
                 rnd = vmm.rnd_checkpoint_stats()
-                rnd["step"] = self.num_timesteps
+                rnd["step"] = inner.step_count
                 self.rnd_log.append(rnd)
                 postfix["novelty"] = f"{rnd['novelty_mean']:.2f}"
                 postfix["rnd_loss"] = f"{rnd['rnd_loss_mean']:.4f}"
@@ -603,7 +603,7 @@ def train():
 
     log_path = pathlib.Path("results") / "rnd_logs.json"
     log_path.write_text(json.dumps(all_rnd_logs, indent=2))
-    print(f"\nRND diagnostics saved → {log_path}")
+    print(f"\nRND diagnostics saved -> {log_path}")
 
     return all_no_vmm, all_vmm, all_boustr, all_rnd_logs
 
@@ -621,6 +621,7 @@ def _align(all_ckpts):
 
 
 def plot(all_no_vmm, all_vmm, all_boustr):
+    from rover_coverage_env import DT
     methods = [
         ("Boustrophedon", all_boustr,  "#A0A0A0", "--"),
         ("SAC",           all_no_vmm,  "#4C9BE8", "-"),
@@ -641,25 +642,27 @@ def plot(all_no_vmm, all_vmm, all_boustr):
 
     for label, all_ckpts, color, ls in methods:
         steps, vals = _align(all_ckpts)
+        time_s = steps * DT   # physics steps → simulated seconds (fair comparison)
         for ax, (title, key) in zip(axes, panels):
             arr  = vals[key]
             mean = arr.mean(0)
             std  = arr.std(0)
-            ax.plot(steps, mean, color=color, lw=2, ls=ls, label=label)
-            ax.fill_between(steps, mean - std, mean + std, color=color, alpha=0.18)
+            ax.plot(time_s, mean, color=color, lw=2, ls=ls, label=label)
+            ax.fill_between(time_s, mean - std, mean + std, color=color, alpha=0.18)
 
     for ax, (title, _) in zip(axes, panels):
-        ax.set_title(title); ax.set_xlabel("Steps")
+        ax.set_title(title); ax.set_xlabel("Simulated time (s)")
         ax.legend(fontsize=9); ax.grid(alpha=0.3)
 
     plt.tight_layout()
     out = "results/comparison.png"
     plt.savefig(out, dpi=150); plt.close()
-    print(f"Plot saved → {out}")
+    print(f"Plot saved ->{out}")
 
     # ── Separate plot per method ───────────────────────────────────────────────
     for label, all_ckpts, color, ls in methods:
         steps, vals = _align(all_ckpts)
+        time_s = steps * DT
         fig, axes2 = plt.subplots(1, 3, figsize=(15, 4))
         fig.suptitle(f"{label}  ({len(SEEDS)} seeds, mean ± std, {TRAIN_STEPS//1000}k steps)",
                      fontsize=12, fontweight="bold")
@@ -667,17 +670,17 @@ def plot(all_no_vmm, all_vmm, all_boustr):
             arr  = vals[key]
             mean = arr.mean(0)
             std  = arr.std(0)
-            ax.plot(steps, mean, color=color, lw=2, ls=ls)
-            ax.fill_between(steps, mean - std, mean + std, color=color, alpha=0.25)
+            ax.plot(time_s, mean, color=color, lw=2, ls=ls)
+            ax.fill_between(time_s, mean - std, mean + std, color=color, alpha=0.25)
             for seed_i, seed in enumerate(SEEDS):
-                ax.plot(steps, arr[seed_i], color=color, lw=0.8, alpha=0.4,
+                ax.plot(time_s, arr[seed_i], color=color, lw=0.8, alpha=0.4,
                         label=f"seed {seed}")
-            ax.set_title(title); ax.set_xlabel("Steps")
+            ax.set_title(title); ax.set_xlabel("Simulated time (s)")
             ax.legend(fontsize=8); ax.grid(alpha=0.3)
         plt.tight_layout()
         fname = f"results/{label.lower().replace(' ', '_').replace('+', 'plus')}.png"
         plt.savefig(fname, dpi=150); plt.close()
-        print(f"Plot saved → {fname}")
+        print(f"Plot saved ->{fname}")
 
     # ── Summary table ─────────────────────────────────────────────────────────
     def final_mean_std(all_ckpts, key):
@@ -727,8 +730,9 @@ def plot_rnd(all_rnd_logs):
         print("No RND logs to plot.")
         return
 
+    from rover_coverage_env import DT
     n_ckpts = min(len(log) for log in all_rnd_logs)
-    steps   = [entry["step"] for entry in all_rnd_logs[0][:n_ckpts]]
+    steps   = [entry["step"] * DT for entry in all_rnd_logs[0][:n_ckpts]]
 
     def _mean_std(key):
         arr = np.array([[entry[key] for entry in log[:n_ckpts]]
@@ -743,7 +747,7 @@ def plot_rnd(all_rnd_logs):
     m, s = _mean_std("rnd_loss_mean")
     ax.plot(steps, m, color="#E07040", lw=2)
     ax.fill_between(steps, m - s, m + s, alpha=0.2, color="#E07040")
-    ax.set_title("Raw RND Loss (should decay)"); ax.set_xlabel("Steps")
+    ax.set_title("Raw RND Loss (should decay)"); ax.set_xlabel("Simulated time (s)")
     ax.grid(alpha=0.3)
 
     # Panel 2 — novelty score
@@ -753,7 +757,7 @@ def plot_rnd(all_rnd_logs):
     ax.fill_between(steps, m - s, m + s, alpha=0.2, color="#4C9BE8")
     ms, ss = _mean_std("novelty_std")
     ax.plot(steps, ms, color="#4C9BE8", lw=1, ls="--", label="std novelty")
-    ax.set_title("Novelty Score Distribution"); ax.set_xlabel("Steps")
+    ax.set_title("Novelty Score Distribution"); ax.set_xlabel("Simulated time (s)")
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
     # Panel 3 — directional FOV novelty
@@ -766,7 +770,7 @@ def plot_rnd(all_rnd_logs):
         m, s = _mean_std(key)
         ax.plot(steps, m, lw=2, color=col, label=label)
         ax.fill_between(steps, m - s, m + s, alpha=0.15, color=col)
-    ax.set_title("Directional FOV Novelty (L/C/R)"); ax.set_xlabel("Steps")
+    ax.set_title("Directional FOV Novelty (L/C/R)"); ax.set_xlabel("Simulated time (s)")
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
     # Panel 4 — probe errors per room
@@ -780,12 +784,12 @@ def plot_rnd(all_rnd_logs):
         ax.plot(steps, m, lw=1.5, color=col, label=label)
         ax.fill_between(steps, m - s, m + s, alpha=0.12, color=col)
     ax.set_title("Probe Error per Room (high=novel, low=familiar)")
-    ax.set_xlabel("Steps"); ax.legend(fontsize=7, ncol=2); ax.grid(alpha=0.3)
+    ax.set_xlabel("Simulated time (s)"); ax.legend(fontsize=7, ncol=2); ax.grid(alpha=0.3)
 
     plt.tight_layout()
     out = "rnd_analysis.png"
     plt.savefig(out, dpi=150)
-    print(f"RND analysis plot saved → {out}")
+    print(f"RND analysis plot saved -> {out}")
 
 
 # -- Main -----------------------------------------------------------------------
