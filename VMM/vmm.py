@@ -28,7 +28,8 @@ import numpy as np
 EMBED_DIM       = 128
 HIDDEN_DIM      = 256
 MEMORY_SIZE     = 500       # max embeddings stored
-MEMORY_ADD_DIST = 0.07      # min cosine distance to add a new embedding to bank
+MEMORY_KNOWN_DIST = 0.08    # below this, update an existing visual-place cluster
+MEMORY_UPDATE_RATE = 0.05   # centroid adaptation rate for familiar views
 NOVEL_DIST_THR  = 0.12      # cosine distance → "novel"  (pure memory decision)
 MEMORY_NORM_DIST = 0.18     # distance that saturates memory novelty at 1.0
 RND_WEIGHT      = 0.65
@@ -113,32 +114,40 @@ class RunningNorm:
 
 # ── Memory bank ───────────────────────────────────────────────────────────────
 class MemoryBank:
-    """Stores diverse L2-normalised embeddings. Only adds when far enough from all stored."""
+    """Stores visual-place cluster centroids instead of individual frames."""
     def __init__(self, maxlen=MEMORY_SIZE):
         self.bank   = []
+        self.counts = []
+        self.last_seen = []
         self.maxlen = maxlen
 
-    def query(self, z: torch.Tensor) -> float:
+    def query(self, z: torch.Tensor):
         """Return cosine distance to nearest neighbour (0=identical, up to 2)."""
         if not self.bank:
-            return 1.0
+            return 1.0, None
         bank_t = torch.stack(self.bank)          # (N, D)
         sims   = (bank_t @ z.T).squeeze(-1)      # cosine sim (already L2-normed)
-        return float(1.0 - sims.max().item())    # distance = 1 - max_sim
+        best = int(sims.argmax().item())
+        return float(1.0 - sims[best].item()), best
 
-    def maybe_add(self, z: torch.Tensor, dist: float):
-        if dist < MEMORY_ADD_DIST:
-            return
+    def update(self, z: torch.Tensor, dist: float, cluster_idx, step: int):
+        z = z.detach().squeeze(0)
+        if cluster_idx is not None and dist < MEMORY_KNOWN_DIST:
+            eta = min(MEMORY_UPDATE_RATE, 1.0 / (self.counts[cluster_idx] + 1))
+            centroid = F.normalize((1.0 - eta) * self.bank[cluster_idx] + eta * z, dim=0)
+            self.bank[cluster_idx] = centroid.detach()
+            self.counts[cluster_idx] += 1
+            self.last_seen[cluster_idx] = step
+            return cluster_idx, False
         if len(self.bank) >= self.maxlen:
-            # Diversity-preserving eviction: remove the most redundant embedding
-            # (the one whose nearest neighbour is closest — least unique).
-            bank_t  = torch.stack(self.bank)          # (N, D)
-            sims    = bank_t @ bank_t.T               # (N, N) pairwise cosine sims
-            sims.fill_diagonal_(-1.0)                 # ignore self-similarity
-            max_sim = sims.max(dim=1).values          # each entry's nearest-neighbour sim
-            evict   = int(max_sim.argmax().item())    # most redundant index
+            evict = int(np.argmin(self.last_seen))
             self.bank.pop(evict)
-        self.bank.append(z.detach().squeeze(0))
+            self.counts.pop(evict)
+            self.last_seen.pop(evict)
+        self.bank.append(z.detach())
+        self.counts.append(1)
+        self.last_seen.append(step)
+        return len(self.bank) - 1, True
 
 
 # ── VMM ───────────────────────────────────────────────────────────────────────
@@ -163,10 +172,12 @@ class VMM:
     def observe(self, frame_bgr):
         z = self._embed(frame_bgr)
 
-        # ── Memory signal (primary) ───────────────────────────────
-        mem_dist = self.memory.query(z)
+        # ── Memory signal (visual-place cluster distance) ─────────
+        mem_dist, cluster_idx = self.memory.query(z)
         if self.step >= WARMUP_STEPS:
-            self.memory.maybe_add(z, mem_dist)
+            cluster_idx, created_cluster = self.memory.update(z, mem_dist, cluster_idx, self.step)
+        else:
+            created_cluster = False
 
         # ── RND (trains always, reported separately) ──────────────
         with torch.no_grad():
@@ -194,6 +205,8 @@ class VMM:
             "mem_dist":  mem_dist,
             "mem_norm":  mem_norm,
             "rnd_norm":  rnd_norm,
+            "cluster_id": cluster_idx,
+            "new_cluster": created_cluster,
             "is_novel":  is_novel,
             "bank_size": len(self.memory.bank),
             "step":      self.step,

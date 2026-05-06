@@ -106,7 +106,8 @@ _RND_OUTPUT_DIM    = 64
 _RND_LR            = 5e-6  # very slow fit — prevents predictor overfitting, keeps novelty alive
 _RND_WARMUP        = 100  # kick in sooner so bonus drives early exploration
 _MEMORY_SIZE       = 1000
-_MEMORY_ADD_DIST   = 0.06
+_MEMORY_KNOWN_DIST = 0.08
+_MEMORY_UPDATE_RATE = 0.05
 _MEMORY_NORM_DIST  = 0.18
 _RND_WEIGHT        = 0.65
 _MEMORY_WEIGHT     = 0.35
@@ -139,36 +140,52 @@ class _RNDPredictor(torch.nn.Module):
     def forward(self, x): return self.net(x)
 
 
-class _EmbeddingMemory:
-    """Bounded diverse memory bank for explicit seen-before novelty."""
-    def __init__(self, maxlen=_MEMORY_SIZE, add_dist=_MEMORY_ADD_DIST):
+class _ClusterMemory:
+    """Bounded visual-place clusters for explicit seen-before novelty."""
+    def __init__(self, maxlen=_MEMORY_SIZE, known_dist=_MEMORY_KNOWN_DIST,
+                 update_rate=_MEMORY_UPDATE_RATE):
         self.maxlen = maxlen
-        self.add_dist = add_dist
-        self._bank = []
+        self.known_dist = known_dist
+        self.update_rate = update_rate
+        self._centroids = []
+        self._counts = []
+        self._last_seen = []
 
     @property
     def size(self):
-        return len(self._bank)
+        return len(self._centroids)
 
     def query(self, x):
         with torch.no_grad():
             z = torch.nn.functional.normalize(x.detach().squeeze(0), dim=0)
-            if not self._bank:
-                return 1.0, z
-            bank = torch.stack(self._bank).to(z.device)
-            sims = bank @ z
-            return float(1.0 - sims.max().item()), z
+            if not self._centroids:
+                return 1.0, z, None
+            centroids = torch.stack(self._centroids).to(z.device)
+            sims = centroids @ z
+            best_idx = int(sims.argmax().item())
+            return float(1.0 - sims[best_idx].item()), z, best_idx
 
-    def maybe_add(self, z, dist):
-        if dist < self.add_dist:
-            return
-        if len(self._bank) >= self.maxlen:
-            bank = torch.stack(self._bank)
-            sims = bank @ bank.T
-            sims.fill_diagonal_(-1.0)
-            evict = int(sims.max(dim=1).values.argmax().item())
-            self._bank.pop(evict)
-        self._bank.append(z.detach().cpu())
+    def update(self, z, dist, cluster_idx, step):
+        z_cpu = z.detach().cpu()
+        if cluster_idx is not None and dist < self.known_dist:
+            old = self._centroids[cluster_idx]
+            eta = min(self.update_rate, 1.0 / (self._counts[cluster_idx] + 1))
+            centroid = torch.nn.functional.normalize((1.0 - eta) * old + eta * z_cpu, dim=0)
+            self._centroids[cluster_idx] = centroid
+            self._counts[cluster_idx] += 1
+            self._last_seen[cluster_idx] = step
+            return cluster_idx, False
+
+        if len(self._centroids) >= self.maxlen:
+            evict = int(np.argmin(self._last_seen))
+            self._centroids.pop(evict)
+            self._counts.pop(evict)
+            self._last_seen.pop(evict)
+
+        self._centroids.append(z_cpu)
+        self._counts.append(1)
+        self._last_seen.append(step)
+        return len(self._centroids) - 1, True
 
 
 class VMMObsWrapper(gym.Wrapper):
@@ -184,7 +201,7 @@ class VMMObsWrapper(gym.Wrapper):
         [vl, vr]                      — last executed wheel speeds
 
     RND input   : simulated egocentric camera embedding + IMU heading.
-    Memory bank : nearest-neighbour cosine distance over the same embeddings.
+    Memory bank : nearest visual-place cluster distance over the same embeddings.
     Reward bonus: novelty * _VMM_NOVELTY_SCALE every step (after warmup).
     """
 
@@ -200,13 +217,15 @@ class VMMObsWrapper(gym.Wrapper):
         self._target    = _RNDTarget().to(DEVICE)
         self._predictor = _RNDPredictor().to(DEVICE)
         self._opt       = torch.optim.Adam(self._predictor.parameters(), lr=_RND_LR)
-        self._memory    = _EmbeddingMemory()
+        self._memory    = _ClusterMemory()
         self._rnd_mean     = 0.0
         self._rnd_m2       = 0.0
         self._rnd_n        = 0
         self._novelty      = 0.0
         self._rnd_novelty  = 0.0
         self._mem_novelty  = 0.0
+        self._cluster_id   = None
+        self._new_cluster  = False
         self._global_steps = 0  # never resets — warmup is global, not per-episode
 
         # RND diagnostics — accumulated between eval checkpoints
@@ -216,6 +235,7 @@ class VMMObsWrapper(gym.Wrapper):
         self._diag_mem         = []   # memory component every step
         self._diag_fov         = []   # [fov_L, fov_C, fov_R] every step
         self._diag_memory_size = []   # bank size every step
+        self._diag_new_clusters = []  # cluster creations every step
 
         # Fixed visual probes: synthetic egocentric views with distinct texture
         # phases. They are diagnostics only; policy/RND training never sees room ids.
@@ -297,10 +317,12 @@ class VMMObsWrapper(gym.Wrapper):
         raw = self._rnd_error(x, update=True)
         rnd_norm = self._normalise_rnd(raw, update_stats=True)
 
-        mem_dist, z = self._memory.query(x)
+        mem_dist, z, cluster_idx = self._memory.query(x)
         mem_norm = float(np.clip(mem_dist / _MEMORY_NORM_DIST, 0.0, 1.0))
+        new_cluster = False
         if self._global_steps >= _RND_WARMUP:
-            self._memory.maybe_add(z, mem_dist)
+            cluster_idx, new_cluster = self._memory.update(
+                z, mem_dist, cluster_idx, self._global_steps)
 
         combined = float(np.clip(_RND_WEIGHT * rnd_norm + _MEMORY_WEIGHT * mem_norm, 0.0, 1.0))
 
@@ -309,8 +331,11 @@ class VMMObsWrapper(gym.Wrapper):
         self._diag_rnd.append(rnd_norm)
         self._diag_mem.append(mem_norm)
         self._diag_memory_size.append(self._memory.size)
+        self._diag_new_clusters.append(1.0 if new_cluster else 0.0)
         self._rnd_novelty = rnd_norm
         self._mem_novelty = mem_norm
+        self._cluster_id = cluster_idx
+        self._new_cluster = new_cluster
         return combined
 
     def _fov_novelty(self):
@@ -321,7 +346,7 @@ class VMMObsWrapper(gym.Wrapper):
             vec = self._sim_camera_embedding(center_offset=rel_angle)
             x_t = torch.tensor(vec).unsqueeze(0).to(DEVICE)
             rnd_norm = self._normalise_rnd(self._rnd_error(x_t, update=False), update_stats=False)
-            mem_dist, _ = self._memory.query(x_t)
+            mem_dist, _, _ = self._memory.query(x_t)
             mem_norm = float(np.clip(mem_dist / _MEMORY_NORM_DIST, 0.0, 1.0))
             combined = float(np.clip(_RND_WEIGHT * rnd_norm + _MEMORY_WEIGHT * mem_norm, 0.0, 1.0))
             result.append(combined)
@@ -352,6 +377,7 @@ class VMMObsWrapper(gym.Wrapper):
         mem_vals   = np.array(self._diag_mem)        if self._diag_mem        else np.array([0.0])
         fovs      = np.array(self._diag_fov)         if self._diag_fov        else np.zeros((1, 3))
         mem_sizes = np.array(self._diag_memory_size) if self._diag_memory_size else np.array([self._memory.size])
+        new_clusters = np.array(self._diag_new_clusters) if self._diag_new_clusters else np.array([0.0])
 
         # Probe: evaluate RND on each fixed state — no gradient, no predictor update
         with torch.no_grad():
@@ -377,6 +403,8 @@ class VMMObsWrapper(gym.Wrapper):
             "rnd_running_mean": self._rnd_mean,
             "memory_size":       int(mem_sizes[-1]),
             "memory_size_mean":  float(mem_sizes.mean()),
+            "new_clusters":      int(new_clusters.sum()),
+            "new_cluster_rate":  float(new_clusters.mean()),
         }
         # Reset accumulators
         self._diag_raw_losses.clear()
@@ -385,6 +413,7 @@ class VMMObsWrapper(gym.Wrapper):
         self._diag_mem.clear()
         self._diag_fov.clear()
         self._diag_memory_size.clear()
+        self._diag_new_clusters.clear()
         return stats
 
     def reset(self, **kwargs):
@@ -403,6 +432,8 @@ class VMMObsWrapper(gym.Wrapper):
         info["rnd_novelty"] = self._rnd_novelty
         info["mem_novelty"] = self._mem_novelty
         info["memory_size"] = self._memory.size
+        info["cluster_id"] = self._cluster_id
+        info["new_cluster"] = self._new_cluster
         return self._augment(obs, self._novelty), reward, term, trunc, info
 
 
@@ -666,7 +697,8 @@ def _save_rnd_csv(all_rnd_logs, out_dir):
             "novelty_std", "rnd_novelty_mean", "rnd_novelty_std",
             "mem_novelty_mean", "mem_novelty_std", "fov_L_mean",
             "fov_C_mean", "fov_R_mean", "rnd_running_mean",
-            "memory_size", "memory_size_mean",
+            "memory_size", "memory_size_mean", "new_clusters",
+            "new_cluster_rate",
         ]
         probe_keys = [f"probe_error_{i}" for i in range(len(log[0].get("probe_errors", [])))]
         with open(path, "w", newline="") as f:
@@ -948,8 +980,8 @@ def plot_rnd(all_rnd_logs):
     if "memory_size" in all_rnd_logs[0][0]:
         ax2 = ax.twinx()
         ms, _ = _mean_std("memory_size")
-        ax2.plot(steps, ms, color="#303030", lw=1.2, alpha=0.65, label="Memory size")
-        ax2.set_ylabel("Memory size")
+        ax2.plot(steps, ms, color="#303030", lw=1.2, alpha=0.65, label="Clusters")
+        ax2.set_ylabel("Visual-place clusters")
 
     # Panel 4 — probe errors per room
     ax = axes[1, 1]
