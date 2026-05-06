@@ -55,6 +55,11 @@ def safe_json(value):
     return value
 
 
+def blur_score(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
 def set_raw_terminal():
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
@@ -177,6 +182,7 @@ class DatasetLogger:
         self.latest_status = {}
         self.latest_jpeg = None
         self.latest_frame_meta = {}
+        self.latest_blur = None
         self.latest_novelty = None
         self.vmm = None
         self.last_novelty_t = 0.0
@@ -219,6 +225,7 @@ class DatasetLogger:
                 'command': dict(self.latest_command),
                 'status': dict(self.latest_status),
                 'frame': dict(self.latest_frame_meta),
+                'blur_score': self.latest_blur,
                 'novelty': self.latest_novelty,
                 'dataset': str(self.root),
             }
@@ -271,6 +278,7 @@ class DatasetLogger:
             try:
                 frame = self.rover.get_camera_frame()
                 encoded_ok, encoded = cv2.imencode('.jpg', frame, params)
+                blur = blur_score(frame)
                 rel = f'frames/frame_{self.frame_index:06d}.jpg'
                 path = self.root / rel
                 if encoded_ok:
@@ -284,6 +292,7 @@ class DatasetLogger:
                     'path': rel,
                     'shape': list(frame.shape),
                     'ok': bool(ok),
+                    'blur_score': blur,
                     'command': self._snapshot_command(),
                 }
                 novelty = self._maybe_compute_novelty(frame)
@@ -292,6 +301,7 @@ class DatasetLogger:
                 with self.lock:
                     self.latest_jpeg = encoded.tobytes() if encoded_ok else None
                     self.latest_frame_meta = row
+                    self.latest_blur = blur
                     if novelty is not None:
                         self.latest_novelty = novelty
                 self.frame_index += 1
@@ -373,6 +383,11 @@ img{max-width:100%;width:100%;border-radius:10px;border:1px solid #303a4c}
         <div class="pill mono">bank: <span id="bank">--</span></div>
         <div class="pill mono">is_novel: <span id="flag">--</span></div>
       </div>
+      <h3 style="margin:14px 0 8px">Image Quality</h3>
+      <div class="row mono">
+        <div class="pill">blur score: <span id="blur">--</span></div>
+        <div class="pill">quality: <span id="quality">--</span></div>
+      </div>
       <h3 style="margin:14px 0 8px">Sensors (cm)</h3>
       <div class="row mono">
         <div class="pill">front: <span id="front">--</span></div>
@@ -404,6 +419,12 @@ async function tick(){
   document.getElementById('rnd').textContent=(n.rnd_norm!==undefined)?num(n.rnd_norm,3):'--';
   document.getElementById('bank').textContent=(n.bank_size!==undefined)?String(n.bank_size):'--';
   document.getElementById('flag').textContent=(n.is_novel===undefined)?'--':String(n.is_novel);
+  const blur=s.blur_score;
+  document.getElementById('blur').textContent=(typeof blur==='number')?blur.toFixed(1):'--';
+  let q='--';
+  if(typeof blur==='number') q = blur<30?'blurry':(blur<80?'soft':'sharp');
+  document.getElementById('quality').textContent=q;
+  document.getElementById('quality').className=q==='sharp'?'good':(q==='soft'?'warn':'bad');
   document.getElementById('front').textContent=fmt(us.front);
   document.getElementById('left').textContent=fmt(us.left);
   document.getElementById('right').textContent=fmt(us.right);
