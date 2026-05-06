@@ -137,6 +137,9 @@ def parse_args():
     parser.add_argument('--min-drive-cm', type=float, default=10.0)
     parser.add_argument('--turn-pwm', type=float, default=65.0)
     parser.add_argument('--drive-pwm', type=float, default=90.0)
+    parser.add_argument('--front-stop-cm', type=float, default=45.0)
+    parser.add_argument('--front-clear-cm', type=float, default=55.0)
+    parser.add_argument('--no-echo-is-clear', action='store_true')
     parser.add_argument('--no-camera-vmm', action='store_true')
     parser.add_argument('--deterministic', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
@@ -163,7 +166,16 @@ def main():
     camera_enabled = (not args.no_camera_vmm) and obs_dim == 12
     rover = RoverAPI(camera_enabled=camera_enabled)
     imu = MPU9150(bus=1, address=0x68)
-    safety = SafetyController(rover, imu=imu, config=SafetyConfig())
+    safety = SafetyController(
+        rover,
+        imu=imu,
+        config=SafetyConfig(
+            min_front_stop_cm=args.front_stop_cm,
+            max_front_stop_cm=args.front_stop_cm,
+            front_clear_to_resume_cm=args.front_clear_cm,
+            no_echo_is_clear=args.no_echo_is_clear,
+        ),
+    )
     obs_builder = RealRoverObsBuilder(rover, safety, use_camera_vmm=camera_enabled)
     executor = LocalTargetExecutor(
         safety,
@@ -176,6 +188,22 @@ def main():
         for step in range(args.steps):
             obs, distances = obs_builder.build(obs_dim)
             action, _ = model.predict(obs, deterministic=args.deterministic)
+            safe, front, threshold = safety.is_front_safe(args.drive_pwm, distances)
+            if not safe:
+                turn_dir = safety.freer_side(distances)
+                print(json.dumps({
+                    'step': step,
+                    'distances': distances,
+                    'safety_override': 'front_blocked_before_policy_execution',
+                    'front_cm': front,
+                    'threshold_cm': threshold,
+                    'turn_dir': turn_dir,
+                }, sort_keys=True), flush=True)
+                if not args.dry_run:
+                    report = safety.turn_until_clear(turn_dir, speed_pct=args.turn_pwm)
+                    print(json.dumps({'recovery': report}, sort_keys=True), flush=True)
+                time.sleep(args.sleep)
+                continue
             obs_builder.last_action = np.asarray(action, dtype=np.float32).copy()
             target = action_to_target(action, args.max_theta_deg, args.max_distance_cm, args.min_drive_cm)
             print(json.dumps({

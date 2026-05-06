@@ -19,7 +19,7 @@ class SafetyConfig:
     stuck_min_yaw_change_deg: float = 2.0
     stuck_min_accel_delta_g: float = 0.025
     ultrasonic_timeout_seconds: float = 0.03
-    no_echo_is_clear: bool = True
+    no_echo_is_clear: bool = False
 
 
 class SafetyController:
@@ -80,8 +80,8 @@ class SafetyController:
 
     def freer_side(self, distances=None):
         distances = distances or self.read_distances()
-        left = distances['left'] if distances['left'] is not None else 999.0
-        right = distances['right'] if distances['right'] is not None else 999.0
+        left = distances['left'] if distances['left'] is not None else -1.0
+        right = distances['right'] if distances['right'] is not None else -1.0
         return 'left' if left >= right else 'right'
 
     def drive_forward_tick(self, speed_pct, tick_seconds=0.12):
@@ -116,7 +116,10 @@ class SafetyController:
         try:
             while time.monotonic() - start < max_seconds:
                 distances = self.read_distances()
-                front_clear = distances['front'] is not None and distances['front'] >= self.config.front_clear_to_resume_cm
+                front_clear = (
+                    distances['front'] is not None
+                    and distances['front'] >= self.config.front_clear_to_resume_cm
+                )
                 if front_clear:
                     return {'reason': 'clear', 'yaw_deg': yaw, **distances}
                 turn_safe, _, turn_reason = self.is_turn_safe(direction, distances)

@@ -16,4 +16,6 @@ exec "$PYTHON_BIN" embedded/scripts/run_sac_vmm_local_targets.py \
   --min-drive-cm "${SAC_MIN_DRIVE_CM:-10}" \
   --turn-pwm "${SAC_TURN_PWM:-65}" \
   --drive-pwm "${SAC_DRIVE_PWM:-90}" \
+  --front-stop-cm "${SAC_FRONT_STOP_CM:-45}" \
+  --front-clear-cm "${SAC_FRONT_CLEAR_CM:-55}" \
   "$@"
