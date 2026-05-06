@@ -105,6 +105,11 @@ _RND_HIDDEN        = 64
 _RND_OUTPUT_DIM    = 64
 _RND_LR            = 5e-6  # very slow fit — prevents predictor overfitting, keeps novelty alive
 _RND_WARMUP        = 100  # kick in sooner so bonus drives early exploration
+_MEMORY_SIZE       = 1000
+_MEMORY_ADD_DIST   = 0.06
+_MEMORY_NORM_DIST  = 0.18
+_RND_WEIGHT        = 0.65
+_MEMORY_WEIGHT     = 0.35
 
 
 class _RNDTarget(torch.nn.Module):
@@ -134,6 +139,38 @@ class _RNDPredictor(torch.nn.Module):
     def forward(self, x): return self.net(x)
 
 
+class _EmbeddingMemory:
+    """Bounded diverse memory bank for explicit seen-before novelty."""
+    def __init__(self, maxlen=_MEMORY_SIZE, add_dist=_MEMORY_ADD_DIST):
+        self.maxlen = maxlen
+        self.add_dist = add_dist
+        self._bank = []
+
+    @property
+    def size(self):
+        return len(self._bank)
+
+    def query(self, x):
+        with torch.no_grad():
+            z = torch.nn.functional.normalize(x.detach().squeeze(0), dim=0)
+            if not self._bank:
+                return 1.0, z
+            bank = torch.stack(self._bank).to(z.device)
+            sims = bank @ z
+            return float(1.0 - sims.max().item()), z
+
+    def maybe_add(self, z, dist):
+        if dist < self.add_dist:
+            return
+        if len(self._bank) >= self.maxlen:
+            bank = torch.stack(self._bank)
+            sims = bank @ bank.T
+            sims.fill_diagonal_(-1.0)
+            evict = int(sims.max(dim=1).values.argmax().item())
+            self._bank.pop(evict)
+        self._bank.append(z.detach().cpu())
+
+
 class VMMObsWrapper(gym.Wrapper):
     """
     RND-based novelty wrapper — no coverage-grid oracle.
@@ -141,12 +178,13 @@ class VMMObsWrapper(gym.Wrapper):
     Policy obs (12-dim):
         [left, right, front]          — HC-SR04 ultrasonic sensors
         [sin(θ), cos(θ)]              — IMU heading
-        [novelty]                     — RND error at current position
-        [fov_L, fov_C, fov_R]         — RND error in left/center/right visual sectors
+        [novelty]                     — combined RND + memory novelty
+        [fov_L, fov_C, fov_R]         — combined novelty in visual sectors
         [yaw_rate]                    — normalised gyro-z (IMU), execution feedback
         [vl, vr]                      — last executed wheel speeds
 
     RND input   : simulated egocentric camera embedding + IMU heading.
+    Memory bank : nearest-neighbour cosine distance over the same embeddings.
     Reward bonus: novelty * _VMM_NOVELTY_SCALE every step (after warmup).
     """
 
@@ -162,16 +200,22 @@ class VMMObsWrapper(gym.Wrapper):
         self._target    = _RNDTarget().to(DEVICE)
         self._predictor = _RNDPredictor().to(DEVICE)
         self._opt       = torch.optim.Adam(self._predictor.parameters(), lr=_RND_LR)
+        self._memory    = _EmbeddingMemory()
         self._rnd_mean     = 0.0
         self._rnd_m2       = 0.0
         self._rnd_n        = 0
         self._novelty      = 0.0
+        self._rnd_novelty  = 0.0
+        self._mem_novelty  = 0.0
         self._global_steps = 0  # never resets — warmup is global, not per-episode
 
         # RND diagnostics — accumulated between eval checkpoints
         self._diag_raw_losses  = []   # raw RND loss every step
         self._diag_novelties   = []   # normalised novelty every step
+        self._diag_rnd         = []   # RND component every step
+        self._diag_mem         = []   # memory component every step
         self._diag_fov         = []   # [fov_L, fov_C, fov_R] every step
+        self._diag_memory_size = []   # bank size every step
 
         # Fixed visual probes: synthetic egocentric views with distinct texture
         # phases. They are diagnostics only; policy/RND training never sees room ids.
@@ -230,38 +274,57 @@ class VMMObsWrapper(gym.Wrapper):
         vec = self._sim_camera_embedding()
         return torch.tensor(vec).unsqueeze(0).to(DEVICE)
 
-    def _compute_novelty(self, x):
-        """Compute RND error, update predictor, return normalised novelty ∈ [0,1]."""
+    def _rnd_error(self, x, update):
         with torch.no_grad():
             t_out = self._target(x)
         p_out = self._predictor(x)
         loss = torch.nn.functional.mse_loss(p_out, t_out)
-        self._opt.zero_grad(); loss.backward(); self._opt.step()
+        if update:
+            self._opt.zero_grad(); loss.backward(); self._opt.step()
+        return loss.item()
 
-        raw = loss.item()
-        # Welford running mean — familiar states trend toward 0, novel states spike to 1
-        self._rnd_n += 1
-        d = raw - self._rnd_mean
-        self._rnd_mean += d / self._rnd_n
-        self._rnd_m2   += d * (raw - self._rnd_mean)
-        norm = float(np.clip(raw / (self._rnd_mean + 1e-8), 0.0, 1.0))
+    def _normalise_rnd(self, raw, update_stats):
+        if update_stats:
+            # Welford running mean — familiar states trend toward 0, novel states spike to 1
+            self._rnd_n += 1
+            d = raw - self._rnd_mean
+            self._rnd_mean += d / self._rnd_n
+            self._rnd_m2   += d * (raw - self._rnd_mean)
+        return float(np.clip(raw / (self._rnd_mean + 1e-8), 0.0, 1.0))
+
+    def _compute_novelty(self, x):
+        """Compute RND + memory novelty, update online models, return combined ∈ [0,1]."""
+        raw = self._rnd_error(x, update=True)
+        rnd_norm = self._normalise_rnd(raw, update_stats=True)
+
+        mem_dist, z = self._memory.query(x)
+        mem_norm = float(np.clip(mem_dist / _MEMORY_NORM_DIST, 0.0, 1.0))
+        if self._global_steps >= _RND_WARMUP:
+            self._memory.maybe_add(z, mem_dist)
+
+        combined = float(np.clip(_RND_WEIGHT * rnd_norm + _MEMORY_WEIGHT * mem_norm, 0.0, 1.0))
+
         self._diag_raw_losses.append(raw)
-        self._diag_novelties.append(norm)
-        return norm
+        self._diag_novelties.append(combined)
+        self._diag_rnd.append(rnd_norm)
+        self._diag_mem.append(mem_norm)
+        self._diag_memory_size.append(self._memory.size)
+        self._rnd_novelty = rnd_norm
+        self._mem_novelty = mem_norm
+        return combined
 
     def _fov_novelty(self):
-        """RND novelty evaluated on left/center/right crops of the current view."""
+        """Combined novelty evaluated on left/center/right crops of the current view."""
         sector_centers = [np.radians(35), 0.0, -np.radians(35)]
         result = []
         for rel_angle in sector_centers:
             vec = self._sim_camera_embedding(center_offset=rel_angle)
             x_t = torch.tensor(vec).unsqueeze(0).to(DEVICE)
-            with torch.no_grad():
-                t_out = self._target(x_t)
-                p_out = self._predictor(x_t)
-                err   = torch.nn.functional.mse_loss(p_out, t_out).item()
-            norm = float(np.clip(err / (self._rnd_mean + 1e-8), 0.0, 1.0))
-            result.append(norm)
+            rnd_norm = self._normalise_rnd(self._rnd_error(x_t, update=False), update_stats=False)
+            mem_dist, _ = self._memory.query(x_t)
+            mem_norm = float(np.clip(mem_dist / _MEMORY_NORM_DIST, 0.0, 1.0))
+            combined = float(np.clip(_RND_WEIGHT * rnd_norm + _MEMORY_WEIGHT * mem_norm, 0.0, 1.0))
+            result.append(combined)
         return np.array(result, dtype=np.float32)
 
     def _augment(self, obs, novelty):
@@ -285,7 +348,10 @@ class VMMObsWrapper(gym.Wrapper):
         Called by TrackCallback at each eval interval."""
         losses    = np.array(self._diag_raw_losses) if self._diag_raw_losses else np.array([0.0])
         novelties = np.array(self._diag_novelties)  if self._diag_novelties  else np.array([0.0])
+        rnd_vals   = np.array(self._diag_rnd)        if self._diag_rnd        else np.array([0.0])
+        mem_vals   = np.array(self._diag_mem)        if self._diag_mem        else np.array([0.0])
         fovs      = np.array(self._diag_fov)         if self._diag_fov        else np.zeros((1, 3))
+        mem_sizes = np.array(self._diag_memory_size) if self._diag_memory_size else np.array([self._memory.size])
 
         # Probe: evaluate RND on each fixed state — no gradient, no predictor update
         with torch.no_grad():
@@ -300,16 +366,25 @@ class VMMObsWrapper(gym.Wrapper):
             "rnd_loss_std":     float(losses.std()),
             "novelty_mean":     float(novelties.mean()),
             "novelty_std":      float(novelties.std()),
+            "rnd_novelty_mean":  float(rnd_vals.mean()),
+            "rnd_novelty_std":   float(rnd_vals.std()),
+            "mem_novelty_mean":  float(mem_vals.mean()),
+            "mem_novelty_std":   float(mem_vals.std()),
             "fov_L_mean":       float(fovs[:, 0].mean()),
             "fov_C_mean":       float(fovs[:, 1].mean()),
             "fov_R_mean":       float(fovs[:, 2].mean()),
             "probe_errors":     probe_errors.tolist(),   # 7 values, one per room
             "rnd_running_mean": self._rnd_mean,
+            "memory_size":       int(mem_sizes[-1]),
+            "memory_size_mean":  float(mem_sizes.mean()),
         }
         # Reset accumulators
         self._diag_raw_losses.clear()
         self._diag_novelties.clear()
+        self._diag_rnd.clear()
+        self._diag_mem.clear()
         self._diag_fov.clear()
+        self._diag_memory_size.clear()
         return stats
 
     def reset(self, **kwargs):
@@ -325,6 +400,9 @@ class VMMObsWrapper(gym.Wrapper):
         if self._global_steps >= _RND_WARMUP:
             reward += self._novelty * _VMM_NOVELTY_SCALE
         info["vmm_novelty"] = self._novelty
+        info["rnd_novelty"] = self._rnd_novelty
+        info["mem_novelty"] = self._mem_novelty
+        info["memory_size"] = self._memory.size
         return self._augment(obs, self._novelty), reward, term, trunc, info
 
 
@@ -585,8 +663,10 @@ def _save_rnd_csv(all_rnd_logs, out_dir):
         path = out_dir / f"rnd_training_seed{seed}.csv"
         scalar_keys = [
             "step", "rnd_loss_mean", "rnd_loss_std", "novelty_mean",
-            "novelty_std", "fov_L_mean", "fov_C_mean", "fov_R_mean",
-            "rnd_running_mean",
+            "novelty_std", "rnd_novelty_mean", "rnd_novelty_std",
+            "mem_novelty_mean", "mem_novelty_std", "fov_L_mean",
+            "fov_C_mean", "fov_R_mean", "rnd_running_mean",
+            "memory_size", "memory_size_mean",
         ]
         probe_keys = [f"probe_error_{i}" for i in range(len(log[0].get("probe_errors", [])))]
         with open(path, "w", newline="") as f:
@@ -805,9 +885,8 @@ def plot_rnd(all_rnd_logs):
     Panel 1 — Raw RND loss over training: should decay as predictor learns
                familiar states.  If it stays flat the predictor isn't learning.
 
-    Panel 2 — Novelty score mean ± std: high and stable = good exploration
-               signal throughout.  Collapsing to 0 = predictor over-fitted,
-               novelty dead.
+    Panel 2 — Combined/RND/memory novelty: separates learned predictor error
+               from explicit nearest-neighbour novelty.
 
     Panel 3 — Directional FOV novelty (L/C/R): should diverge when the rover
                is near a wall (one direction blocked, others open).
@@ -843,11 +922,14 @@ def plot_rnd(all_rnd_logs):
     # Panel 2 — novelty score
     ax = axes[0, 1]
     m, s = _mean_std("novelty_mean")
-    ax.plot(steps, m, color="#4C9BE8", lw=2, label="mean novelty")
+    ax.plot(steps, m, color="#4C9BE8", lw=2, label="combined")
     ax.fill_between(steps, m - s, m + s, alpha=0.2, color="#4C9BE8")
-    ms, ss = _mean_std("novelty_std")
-    ax.plot(steps, ms, color="#4C9BE8", lw=1, ls="--", label="std novelty")
-    ax.set_title("Novelty Score Distribution"); ax.set_xlabel("Simulated time (s)")
+    if "rnd_novelty_mean" in all_rnd_logs[0][0]:
+        rm, _ = _mean_std("rnd_novelty_mean")
+        mm, _ = _mean_std("mem_novelty_mean")
+        ax.plot(steps, rm, color="#E07040", lw=1.5, ls="--", label="RND")
+        ax.plot(steps, mm, color="#60A060", lw=1.5, ls=":", label="memory")
+    ax.set_title("Novelty Components"); ax.set_xlabel("Simulated time (s)")
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
     # Panel 3 — directional FOV novelty
@@ -862,6 +944,12 @@ def plot_rnd(all_rnd_logs):
         ax.fill_between(steps, m - s, m + s, alpha=0.15, color=col)
     ax.set_title("Directional FOV Novelty (L/C/R)"); ax.set_xlabel("Simulated time (s)")
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+    if "memory_size" in all_rnd_logs[0][0]:
+        ax2 = ax.twinx()
+        ms, _ = _mean_std("memory_size")
+        ax2.plot(steps, ms, color="#303030", lw=1.2, alpha=0.65, label="Memory size")
+        ax2.set_ylabel("Memory size")
 
     # Panel 4 — probe errors per room
     ax = axes[1, 1]

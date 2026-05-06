@@ -30,6 +30,9 @@ HIDDEN_DIM      = 256
 MEMORY_SIZE     = 500       # max embeddings stored
 MEMORY_ADD_DIST = 0.07      # min cosine distance to add a new embedding to bank
 NOVEL_DIST_THR  = 0.12      # cosine distance → "novel"  (pure memory decision)
+MEMORY_NORM_DIST = 0.18     # distance that saturates memory novelty at 1.0
+RND_WEIGHT      = 0.65
+MEMORY_WEIGHT   = 0.35
 RND_LR          = 3e-4      # train aggressively — novelty flag controls when, not LR
 RND_UPDATE_FREQ = 1         # update every step
 WARMUP_STEPS    = 5
@@ -175,18 +178,21 @@ class VMM:
         self.opt.zero_grad(); loss.backward(); self.opt.step()
 
         self.rnd_norm.update(rnd_raw)
-        rnd_norm = rnd_raw / (self.rnd_norm.mean + 1e-8)
+        rnd_norm = float(np.clip(rnd_raw / (self.rnd_norm.mean + 1e-8), 0.0, 1.0))
+        mem_norm = float(np.clip(mem_dist / MEMORY_NORM_DIST, 0.0, 1.0))
+        combined = float(np.clip(RND_WEIGHT * rnd_norm + MEMORY_WEIGHT * mem_norm, 0.0, 1.0))
 
-        # ── Decision: memory bank only (deterministic) ────────────
-        is_novel = (mem_dist > NOVEL_DIST_THR) and (self.step >= WARMUP_STEPS)
+        # ── Decision: combined learned + explicit memory novelty ────────────
+        is_novel = (combined > 0.5) and (self.step >= WARMUP_STEPS)
 
         self.nov_norm.update(mem_dist)
         self.step += 1
         self.history.append(mem_dist)
 
         return {
-            "novelty":   mem_dist,
+            "novelty":   combined,
             "mem_dist":  mem_dist,
+            "mem_norm":  mem_norm,
             "rnd_norm":  rnd_norm,
             "is_novel":  is_novel,
             "bank_size": len(self.memory.bank),
@@ -221,7 +227,8 @@ def draw_overlay(frame, r, history):
         f"step      : {r['step']}",
         f"bank size : {r['bank_size']} / {MEMORY_SIZE}",
         f"rnd ratio : {r['rnd_norm']:.3f}",
-        f"novelty   : {r['novelty']:.3f}",
+        f"mem norm  : {r.get('mem_norm', 0.0):.3f}",
+        f"combined  : {r['novelty']:.3f}",
     ]
     for i, s in enumerate(stats):
         cv2.putText(vis, s, (20, 120 + i*22),

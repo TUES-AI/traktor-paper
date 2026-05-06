@@ -27,6 +27,10 @@ evaluation, while RND uses a simulated egocentric camera embedding instead of
 privileged `(x, y)` coordinates. The Pi version should replace that simulated
 embedding with the MobileNetV3 camera embedding below.
 
+The VMM novelty reward is `0.65 * RND + 0.35 * memory_bank_distance`.
+RND gives smooth learned novelty; the memory bank makes repeated perceptions
+explicitly familiar through nearest-neighbour cosine distance.
+
 Benchmark outputs now include `coverage_per_collision`,
 `collisions_per_1k_steps`, `coverage_per_1k_steps`, reward-rate metrics,
 `benchmark_metrics.png`, `coverage_vs_collisions.png`, and flat
