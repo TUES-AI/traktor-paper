@@ -4,10 +4,10 @@
 Controls are designed for SSH terminals that cannot reliably report true
 multi-key holds:
 
-- w: forward cruise
-- s: reverse cruise
-- a: steer left while cruising, or slow spin left if stopped
-- d: steer right while cruising, or slow spin right if stopped
+- w: forward while held/repeated by terminal
+- s: reverse while held/repeated by terminal
+- a: momentary steer left while moving, or slower spin left if stopped
+- d: momentary steer right while moving, or slower spin right if stopped
 - x / space: stop
 - q: quit
 
@@ -71,14 +71,16 @@ def read_pending_key(timeout=0.02):
 
 
 class ControlState:
-    def __init__(self, forward_speed, reverse_speed, arc_inner_scale, spin_speed, steer_timeout):
+    def __init__(self, forward_speed, reverse_speed, arc_inner_scale, spin_speed, steer_timeout, throttle_timeout):
         self.forward_speed = float(forward_speed)
         self.reverse_speed = float(reverse_speed)
         self.arc_inner_scale = float(arc_inner_scale)
         self.spin_speed = float(spin_speed)
         self.steer_timeout = float(steer_timeout)
+        self.throttle_timeout = float(throttle_timeout)
         self.throttle = 0  # -1 reverse, 0 stop, +1 forward
         self.steer = 0    # -1 right, 0 straight, +1 left
+        self.last_throttle_time = 0.0
         self.last_steer_time = 0.0
         self.last_key = None
 
@@ -86,8 +88,10 @@ class ControlState:
         self.last_key = key
         if key == 'w':
             self.throttle = 1
+            self.last_throttle_time = time.monotonic()
         elif key == 's':
             self.throttle = -1
+            self.last_throttle_time = time.monotonic()
         elif key == 'a':
             self.steer = 1
             self.last_steer_time = time.monotonic()
@@ -99,6 +103,8 @@ class ControlState:
             self.steer = 0
 
     def command(self):
+        if self.throttle and time.monotonic() - self.last_throttle_time > self.throttle_timeout:
+            self.throttle = 0
         if self.steer and time.monotonic() - self.last_steer_time > self.steer_timeout:
             self.steer = 0
 
@@ -233,9 +239,10 @@ def parse_args():
     parser.add_argument('--jpeg-quality', type=int, default=85)
     parser.add_argument('--forward-speed', type=float, default=85.0)
     parser.add_argument('--reverse-speed', type=float, default=60.0)
-    parser.add_argument('--spin-speed', type=float, default=45.0)
+    parser.add_argument('--spin-speed', type=float, default=70.0)
     parser.add_argument('--arc-inner-scale', type=float, default=0.45)
     parser.add_argument('--steer-timeout', type=float, default=0.32)
+    parser.add_argument('--throttle-timeout', type=float, default=0.22)
     parser.add_argument('--control-hz', type=float, default=20.0)
     return parser.parse_args()
 
@@ -257,6 +264,7 @@ def main():
         arc_inner_scale=args.arc_inner_scale,
         spin_speed=args.spin_speed,
         steer_timeout=args.steer_timeout,
+        throttle_timeout=args.throttle_timeout,
     )
     logger = DatasetLogger(
         root=run_dir,
@@ -272,8 +280,8 @@ def main():
         'script': 'wasd_dataset_logger.py',
         'run_dir': str(run_dir),
         'controls': {
-            'w': 'forward cruise',
-            's': 'reverse cruise',
+            'w': 'forward while held/repeated',
+            's': 'reverse while held/repeated',
             'a': 'left arc while cruising / slow spin left while stopped',
             'd': 'right arc while cruising / slow spin right while stopped',
             'x_or_space': 'stop',
@@ -284,7 +292,7 @@ def main():
 
     print(__doc__.strip(), flush=True)
     print(f'dataset: {run_dir}', flush=True)
-    print('Press q to quit. x/space stops. w/s set cruise; a/d steer.', flush=True)
+    print('Hold w/s to move, a/d to steer, x/space to stop, q to quit.', flush=True)
 
     fd = old_settings = None
     last_motor = None
