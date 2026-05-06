@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-PYTHON_BIN="${PYTHON_BIN:-/home/yasen/traktor-venv/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-/home/yasen/.venv/bin/python}"
 MODEL_PATH="${1:-results/SAC-VMM___s42.zip}"
 shift || true
 
