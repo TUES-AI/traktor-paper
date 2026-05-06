@@ -55,9 +55,7 @@ def safe_json(value):
     return value
 
 
-def blur_score(frame):
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+GYRO_Z_ROTATING_THRESHOLD = 40.0  # deg/s, skip camera captures above this
 
 
 def set_raw_terminal():
@@ -182,7 +180,7 @@ class DatasetLogger:
         self.latest_status = {}
         self.latest_jpeg = None
         self.latest_frame_meta = {}
-        self.latest_blur = None
+        self.latest_gyro_z = 0.0
         self.latest_novelty = None
         self.vmm = None
         self.last_novelty_t = 0.0
@@ -225,7 +223,7 @@ class DatasetLogger:
                 'command': dict(self.latest_command),
                 'status': dict(self.latest_status),
                 'frame': dict(self.latest_frame_meta),
-                'blur_score': self.latest_blur,
+                'gyro_z': self.latest_gyro_z,
                 'novelty': self.latest_novelty,
                 'dataset': str(self.root),
             }
@@ -267,6 +265,8 @@ class DatasetLogger:
             self._write_row(row)
             with self.lock:
                 self.latest_status = row
+                gyro = (row.get('imu') or {}).get('gyro', {})
+                self.latest_gyro_z = float(gyro.get('z', 0.0) or 0.0)
             next_t += self.sensor_period
             time.sleep(max(0.0, next_t - time.monotonic()))
 
@@ -276,9 +276,14 @@ class DatasetLogger:
         while not self.stop_event.is_set():
             t0_ns = now_ns()
             try:
+                with self.lock:
+                    gyro_z = self.latest_gyro_z
+                if abs(gyro_z) > GYRO_Z_ROTATING_THRESHOLD:
+                    next_t += self.camera_period
+                    time.sleep(max(0.0, next_t - time.monotonic()))
+                    continue
                 frame = self.rover.get_camera_frame()
                 encoded_ok, encoded = cv2.imencode('.jpg', frame, params)
-                blur = blur_score(frame)
                 rel = f'frames/frame_{self.frame_index:06d}.jpg'
                 path = self.root / rel
                 if encoded_ok:
@@ -292,7 +297,6 @@ class DatasetLogger:
                     'path': rel,
                     'shape': list(frame.shape),
                     'ok': bool(ok),
-                    'blur_score': blur,
                     'command': self._snapshot_command(),
                 }
                 novelty = self._maybe_compute_novelty(frame)
@@ -301,7 +305,6 @@ class DatasetLogger:
                 with self.lock:
                     self.latest_jpeg = encoded.tobytes() if encoded_ok else None
                     self.latest_frame_meta = row
-                    self.latest_blur = blur
                     if novelty is not None:
                         self.latest_novelty = novelty
                 self.frame_index += 1
@@ -323,6 +326,7 @@ class DatasetLogger:
             return {
                 'novelty': float(result.get('novelty', 0.0)),
                 'mem_dist': float(result.get('mem_dist', 0.0)),
+                'mem_norm': float(result.get('mem_norm', 0.0)),
                 'rnd_norm': float(result.get('rnd_norm', 0.0)),
                 'is_novel': bool(result.get('is_novel', False)),
                 'bank_size': int(result.get('bank_size', 0)),
@@ -382,11 +386,12 @@ img{max-width:100%;width:100%;border-radius:10px;border:1px solid #303a4c}
         <div class="pill mono">rnd_norm: <span id="rnd">--</span></div>
         <div class="pill mono">bank: <span id="bank">--</span></div>
         <div class="pill mono">is_novel: <span id="flag">--</span></div>
+        <div class="pill mono">mem_norm: <span id="mnorm">--</span></div>
       </div>
-      <h3 style="margin:14px 0 8px">Image Quality</h3>
+      <h3 style="margin:14px 0 8px">IMU / Rotation</h3>
       <div class="row mono">
-        <div class="pill">blur score: <span id="blur">--</span></div>
-        <div class="pill">quality: <span id="quality">--</span></div>
+        <div class="pill">gyro_z: <span id="gyro">--</span></div>
+        <div class="pill">camera: <span id="camok">--</span></div>
       </div>
       <h3 style="margin:14px 0 8px">Sensors (cm)</h3>
       <div class="row mono">
@@ -419,12 +424,12 @@ async function tick(){
   document.getElementById('rnd').textContent=(n.rnd_norm!==undefined)?num(n.rnd_norm,3):'--';
   document.getElementById('bank').textContent=(n.bank_size!==undefined)?String(n.bank_size):'--';
   document.getElementById('flag').textContent=(n.is_novel===undefined)?'--':String(n.is_novel);
-  const blur=s.blur_score;
-  document.getElementById('blur').textContent=(typeof blur==='number')?blur.toFixed(1):'--';
-  let q='--';
-  if(typeof blur==='number') q = blur<30?'blurry':(blur<80?'soft':'sharp');
-  document.getElementById('quality').textContent=q;
-  document.getElementById('quality').className=q==='sharp'?'good':(q==='soft'?'warn':'bad');
+  document.getElementById('mnorm').textContent=(n.mem_norm!==undefined)?num(n.mem_norm,3):'--';
+  const gyro=s.gyro_z;
+  document.getElementById('gyro').textContent=(typeof gyro==='number')?gyro.toFixed(1):'--';
+  const camok=Math.abs(gyro||0)<40;
+  document.getElementById('camok').textContent=camok?'active':'paused (rotating)';
+  document.getElementById('camok').className=camok?'good':'warn';
   document.getElementById('front').textContent=fmt(us.front);
   document.getElementById('left').textContent=fmt(us.left);
   document.getElementById('right').textContent=fmt(us.right);
