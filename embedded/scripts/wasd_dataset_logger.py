@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """WASD teleop with synchronized rover dataset logging.
 
-Controls are designed for SSH terminals that cannot reliably report true
-multi-key holds:
+Controls are designed for SSH terminals that cannot report simultaneous
+key holds. Dedicated single-key combos avoid the need for chords:
 
-- w: forward while held/repeated by terminal
-- s: reverse while held/repeated by terminal
-- a: momentary steer left while moving, or slower spin left if stopped
-- d: momentary steer right while moving, or slower spin right if stopped
-- x / space: stop
-- q: quit
+- w: forward
+- s: reverse
+- q: forward + left arc
+- e: forward + right arc
+- a: spin left while stopped, steer left while moving
+- d: spin right while stopped, steer right while moving
+- x / space: full stop
+- ESC / Ctrl+C: quit
 
 The script logs:
 
@@ -58,19 +60,28 @@ def set_raw_terminal():
     return fd, old_settings
 
 
-def read_pending_key(timeout=0.02):
+def read_all_pending_keys(timeout=0.02):
     ready, _, _ = select([sys.stdin], [], [], timeout)
     if not ready:
-        return None
-    key = sys.stdin.read(1)
+        return []
+    keys = [sys.stdin.read(1)]
     while select([sys.stdin], [], [], 0)[0]:
-        key = sys.stdin.read(1)
-    if key == ' ':
-        return 'space'
-    return key.lower()
+        keys.append(sys.stdin.read(1))
+    result = []
+    for k in keys:
+        if k == ' ':
+            result.append('space')
+        else:
+            result.append(k.lower())
+    return result
 
 
 class ControlState:
+    """Key-set controller friendly to SSH terminals that cannot report
+    simultaneous key holds. Every received key stays active for its own
+    duration, so ``w`` + ``d`` interleaved on the wire still produces an
+    arc-right-driving-forward state."""
+
     def __init__(self, forward_speed, reverse_speed, arc_inner_scale, spin_speed, steer_timeout, throttle_timeout):
         self.forward_speed = float(forward_speed)
         self.reverse_speed = float(reverse_speed)
@@ -78,52 +89,58 @@ class ControlState:
         self.spin_speed = float(spin_speed)
         self.steer_timeout = float(steer_timeout)
         self.throttle_timeout = float(throttle_timeout)
-        self.throttle = 0  # -1 reverse, 0 stop, +1 forward
-        self.steer = 0    # -1 right, 0 straight, +1 left
-        self.last_throttle_time = 0.0
-        self.last_steer_time = 0.0
-        self.last_key = None
+        self.active = {}  # key -> last_seen_monotonic
 
-    def handle_key(self, key):
-        self.last_key = key
-        if key == 'w':
-            self.throttle = 1
-            self.last_throttle_time = time.monotonic()
-        elif key == 's':
-            self.throttle = -1
-            self.last_throttle_time = time.monotonic()
-        elif key == 'a':
-            self.steer = 1
-            self.last_steer_time = time.monotonic()
-        elif key == 'd':
-            self.steer = -1
-            self.last_steer_time = time.monotonic()
-        elif key in ('x', 'space'):
-            self.throttle = 0
-            self.steer = 0
+    def handle_keys(self, keys):
+        now = time.monotonic()
+        for key in keys:
+            self.active[key] = now
 
     def command(self):
-        if self.throttle and time.monotonic() - self.last_throttle_time > self.throttle_timeout:
-            self.throttle = 0
-        if self.steer and time.monotonic() - self.last_steer_time > self.steer_timeout:
-            self.steer = 0
+        now = time.monotonic()
+        for key in list(self.active):
+            timeout = (
+                self.steer_timeout if key in ('a', 'd') else self.throttle_timeout
+            )
+            if now - self.active[key] > timeout:
+                del self.active[key]
 
-        if self.throttle == 0:
-            if self.steer > 0:
+        throttle = 0
+        steer = 0
+
+        if 'q' in self.active:
+            throttle = 1
+            steer = 1
+        elif 'e' in self.active:
+            throttle = 1
+            steer = -1
+        elif 'w' in self.active:
+            throttle = 1
+        elif 's' in self.active:
+            throttle = -1
+
+        if steer == 0:
+            if 'a' in self.active:
+                steer = 1
+            elif 'd' in self.active:
+                steer = -1
+
+        if throttle == 0:
+            if steer > 0:
                 return 'backward', 'forward', self.spin_speed, self.spin_speed, 'slow_spin_left'
-            if self.steer < 0:
+            if steer < 0:
                 return 'forward', 'backward', self.spin_speed, self.spin_speed, 'slow_spin_right'
             return 'stop', 'stop', 0.0, 0.0, 'stop'
 
-        direction = 'forward' if self.throttle > 0 else 'backward'
-        speed = self.forward_speed if self.throttle > 0 else self.reverse_speed
+        direction = 'forward' if throttle > 0 else 'backward'
+        speed = self.forward_speed if throttle > 0 else self.reverse_speed
         left_speed = speed
         right_speed = speed
         label = direction
-        if self.steer > 0:
+        if steer > 0:
             left_speed = speed * self.arc_inner_scale
             label = f'{direction}_arc_left'
-        elif self.steer < 0:
+        elif steer < 0:
             right_speed = speed * self.arc_inner_scale
             label = f'{direction}_arc_right'
         return direction, direction, left_speed, right_speed, label
@@ -280,19 +297,21 @@ def main():
         'script': 'wasd_dataset_logger.py',
         'run_dir': str(run_dir),
         'controls': {
-            'w': 'forward while held/repeated',
-            's': 'reverse while held/repeated',
-            'a': 'left arc while cruising / slow spin left while stopped',
-            'd': 'right arc while cruising / slow spin right while stopped',
-            'x_or_space': 'stop',
-            'q': 'quit',
+            'w': 'forward',
+            's': 'reverse',
+            'q': 'forward + left arc',
+            'e': 'forward + right arc',
+            'a': 'spin left while stopped / steer left while moving',
+            'd': 'spin right while stopped / steer right while moving',
+            'x_or_space': 'full stop',
+            'esc': 'quit',
         },
         'args': vars(args),
     }
 
     print(__doc__.strip(), flush=True)
     print(f'dataset: {run_dir}', flush=True)
-    print('Hold w/s to move, a/d to steer, x/space to stop, q to quit.', flush=True)
+    print('Hold w/s/q/e to move, a/d to spin, x/space to stop, ESC to quit.', flush=True)
 
     fd = old_settings = None
     last_motor = None
@@ -302,12 +321,15 @@ def main():
         fd, old_settings = set_raw_terminal()
         rover.stop_motors()
         while True:
-            key = read_pending_key(timeout=control_period)
-            if key == 'q':
-                print('quit', flush=True)
-                break
-            if key is not None:
-                control.handle_key(key)
+            keys = read_all_pending_keys(timeout=control_period)
+            for key in keys:
+                if key in ('\x1b', '\x03'):
+                    print('quit', flush=True)
+                    return 0
+            if keys:
+                control.handle_keys(keys)
+                if 'x' in keys or 'space' in keys:
+                    control.active.clear()
 
             left_dir, right_dir, left_speed, right_speed, label = control.command()
             command = {
@@ -316,9 +338,7 @@ def main():
                 'right_direction': right_dir,
                 'left_speed': left_speed,
                 'right_speed': right_speed,
-                'throttle': control.throttle,
-                'steer': control.steer,
-                'last_key': control.last_key,
+                'active_keys': sorted(control.active.keys()),
             }
             logger.update_command(command)
             motor_tuple = (left_dir, right_dir, round(left_speed, 2), round(right_speed, 2))
