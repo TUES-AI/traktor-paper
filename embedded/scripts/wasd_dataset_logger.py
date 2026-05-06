@@ -34,6 +34,9 @@ import tty
 import cv2
 
 import _paths  # noqa: F401
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 from api.rover_api import RoverAPI
 from drivers.sensors.mpu9150 import MPU9150
 
@@ -340,19 +343,74 @@ class FlaskDashboard:
         def index():
             return """
 <!doctype html><html><head><title>Rover Dataset Logger</title>
-<style>body{font-family:sans-serif;background:#111;color:#eee}img{max-width:640px;width:95vw;border:2px solid #555}.novel{color:#ff6767}.ok{color:#67ff9a}pre{background:#222;padding:12px;white-space:pre-wrap}</style>
+<style>
+body{font-family:ui-sans-serif,system-ui;background:#0f1219;color:#e9eef7;margin:0}
+.wrap{max-width:1200px;margin:18px auto;padding:0 14px}
+.grid{display:grid;grid-template-columns:1.3fr 1fr;gap:14px}
+.card{background:#181d28;border:1px solid #2a3140;border-radius:12px;padding:12px}
+.kpi{font-size:40px;font-weight:700;line-height:1}
+.muted{color:#9db0cd;font-size:12px}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.pill{background:#232b39;border-radius:8px;padding:8px 10px}
+.good{color:#67ff9a}.bad{color:#ff6e6e}.warn{color:#ffd166}
+img{max-width:100%;width:100%;border-radius:10px;border:1px solid #303a4c}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+</style>
 </head><body>
-<h2>Rover Dataset Logger</h2>
-<img src="/frame" id="frame">
-<h3 id="novelty">novelty: loading</h3>
-<pre id="status">loading</pre>
+<div class="wrap">
+  <h2>Rover Dataset Logger</h2>
+  <div class="grid">
+    <div class="card">
+      <img src="/frame" id="frame">
+      <div class="muted mono" id="dataset">dataset: loading</div>
+    </div>
+    <div class="card">
+      <div class="muted">Novelty</div>
+      <div id="novelty" class="kpi">--</div>
+      <div class="row" style="margin-top:8px">
+        <div class="pill mono">mem_dist: <span id="mem">--</span></div>
+        <div class="pill mono">rnd_norm: <span id="rnd">--</span></div>
+        <div class="pill mono">bank: <span id="bank">--</span></div>
+        <div class="pill mono">is_novel: <span id="flag">--</span></div>
+      </div>
+      <h3 style="margin:14px 0 8px">Sensors (cm)</h3>
+      <div class="row mono">
+        <div class="pill">front: <span id="front">--</span></div>
+        <div class="pill">left: <span id="left">--</span></div>
+        <div class="pill">right: <span id="right">--</span></div>
+      </div>
+      <h3 style="margin:14px 0 8px">Command</h3>
+      <div class="row mono">
+        <div class="pill">label: <span id="label">--</span></div>
+        <div class="pill">L: <span id="ls">--</span></div>
+        <div class="pill">R: <span id="rs">--</span></div>
+        <div class="pill">keys: <span id="keys">--</span></div>
+      </div>
+    </div>
+  </div>
+</div>
 <script>
+function fmt(v){return (v===null||v===undefined)?'None':v}
+function num(v,n=2){return (typeof v==='number')?v.toFixed(n):'--'}
 async function tick(){
   const r=await fetch('/status'); const s=await r.json();
   const n=s.novelty||{};
-  document.getElementById('novelty').textContent='novelty='+JSON.stringify(n);
-  document.getElementById('novelty').className=n.is_novel?'novel':'ok';
-  document.getElementById('status').textContent=JSON.stringify(s,null,2);
+  const us=(s.status||{}).ultrasonic_cm||{};
+  const c=s.command||{};
+  document.getElementById('dataset').textContent='dataset: '+(s.dataset||'--');
+  document.getElementById('novelty').textContent=(n.novelty!==undefined)?num(n.novelty,3):'--';
+  document.getElementById('novelty').className='kpi '+(n.error?'warn':(n.is_novel?'bad':'good'));
+  document.getElementById('mem').textContent=(n.mem_dist!==undefined)?num(n.mem_dist,3):'--';
+  document.getElementById('rnd').textContent=(n.rnd_norm!==undefined)?num(n.rnd_norm,3):'--';
+  document.getElementById('bank').textContent=(n.bank_size!==undefined)?String(n.bank_size):'--';
+  document.getElementById('flag').textContent=(n.is_novel===undefined)?'--':String(n.is_novel);
+  document.getElementById('front').textContent=fmt(us.front);
+  document.getElementById('left').textContent=fmt(us.left);
+  document.getElementById('right').textContent=fmt(us.right);
+  document.getElementById('label').textContent=fmt(c.label);
+  document.getElementById('ls').textContent=fmt(c.left_speed);
+  document.getElementById('rs').textContent=fmt(c.right_speed);
+  document.getElementById('keys').textContent=(c.active_keys||[]).join(',');
   document.getElementById('frame').src='/frame?ts='+Date.now();
 }
 setInterval(tick,500); tick();
