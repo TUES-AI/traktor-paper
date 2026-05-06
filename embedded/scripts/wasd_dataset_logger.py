@@ -23,7 +23,6 @@ The script logs:
 import argparse
 import json
 import math
-import os
 from pathlib import Path
 from select import select
 import sys
@@ -147,7 +146,18 @@ class ControlState:
 
 
 class DatasetLogger:
-    def __init__(self, root, rover, imu, control, sensor_hz, camera_fps, jpeg_quality):
+    def __init__(
+        self,
+        root,
+        rover,
+        imu,
+        control,
+        sensor_hz,
+        camera_fps,
+        jpeg_quality,
+        novelty_enabled=False,
+        novelty_fps=1.0,
+    ):
         self.root = Path(root)
         self.frames_dir = self.root / 'frames'
         self.rover = rover
@@ -156,9 +166,17 @@ class DatasetLogger:
         self.sensor_period = 1.0 / float(sensor_hz)
         self.camera_period = 1.0 / float(camera_fps)
         self.jpeg_quality = int(jpeg_quality)
+        self.novelty_enabled = bool(novelty_enabled)
+        self.novelty_period = 1.0 / max(float(novelty_fps), 1e-6)
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.latest_command = {}
+        self.latest_status = {}
+        self.latest_jpeg = None
+        self.latest_frame_meta = {}
+        self.latest_novelty = None
+        self.vmm = None
+        self.last_novelty_t = 0.0
         self.frame_index = 0
         self.telemetry_f = None
         self.threads = []
@@ -171,6 +189,13 @@ class DatasetLogger:
             threading.Thread(target=self._sensor_loop, name='sensor_logger', daemon=True),
             threading.Thread(target=self._camera_loop, name='camera_logger', daemon=True),
         ]
+        if self.novelty_enabled:
+            try:
+                from VMM.vmm import VMM
+                self.vmm = VMM()
+            except Exception as exc:
+                self.latest_novelty = {'error': repr(exc)}
+                self.vmm = None
         for t in self.threads:
             t.start()
 
@@ -184,6 +209,20 @@ class DatasetLogger:
     def update_command(self, command):
         with self.lock:
             self.latest_command = dict(command)
+
+    def snapshot_status(self):
+        with self.lock:
+            return {
+                'command': dict(self.latest_command),
+                'status': dict(self.latest_status),
+                'frame': dict(self.latest_frame_meta),
+                'novelty': self.latest_novelty,
+                'dataset': str(self.root),
+            }
+
+    def latest_frame_bytes(self):
+        with self.lock:
+            return self.latest_jpeg
 
     def _snapshot_command(self):
         with self.lock:
@@ -216,6 +255,8 @@ class DatasetLogger:
             except Exception as exc:
                 row['imu_error'] = repr(exc)
             self._write_row(row)
+            with self.lock:
+                self.latest_status = row
             next_t += self.sensor_period
             time.sleep(max(0.0, next_t - time.monotonic()))
 
@@ -226,9 +267,12 @@ class DatasetLogger:
             t0_ns = now_ns()
             try:
                 frame = self.rover.get_camera_frame()
+                encoded_ok, encoded = cv2.imencode('.jpg', frame, params)
                 rel = f'frames/frame_{self.frame_index:06d}.jpg'
                 path = self.root / rel
-                ok = cv2.imwrite(str(path), frame, params)
+                if encoded_ok:
+                    path.write_bytes(encoded.tobytes())
+                ok = bool(encoded_ok)
                 row = {
                     'type': 'frame',
                     't_wall_s': now_s(),
@@ -239,12 +283,94 @@ class DatasetLogger:
                     'ok': bool(ok),
                     'command': self._snapshot_command(),
                 }
+                novelty = self._maybe_compute_novelty(frame)
+                if novelty is not None:
+                    row['novelty'] = novelty
+                with self.lock:
+                    self.latest_jpeg = encoded.tobytes() if encoded_ok else None
+                    self.latest_frame_meta = row
+                    if novelty is not None:
+                        self.latest_novelty = novelty
                 self.frame_index += 1
             except Exception as exc:
                 row = {'type': 'frame_error', 't_wall_s': now_s(), 't_ns': t0_ns, 'error': repr(exc)}
             self._write_row(row)
             next_t += self.camera_period
             time.sleep(max(0.0, next_t - time.monotonic()))
+
+    def _maybe_compute_novelty(self, frame):
+        if not self.novelty_enabled or self.vmm is None:
+            return None
+        now = time.monotonic()
+        if now - self.last_novelty_t < self.novelty_period:
+            return None
+        self.last_novelty_t = now
+        try:
+            result = self.vmm.observe(frame)
+            return {
+                'novelty': float(result.get('novelty', 0.0)),
+                'mem_dist': float(result.get('mem_dist', 0.0)),
+                'rnd_norm': float(result.get('rnd_norm', 0.0)),
+                'is_novel': bool(result.get('is_novel', False)),
+                'bank_size': int(result.get('bank_size', 0)),
+                'step': int(result.get('step', 0)),
+            }
+        except Exception as exc:
+            return {'error': repr(exc)}
+
+
+class FlaskDashboard:
+    def __init__(self, logger, host, port, ssl):
+        self.logger = logger
+        self.host = host
+        self.port = int(port)
+        self.ssl = bool(ssl)
+        self.thread = None
+
+    def start(self):
+        self.thread = threading.Thread(target=self._run, name='flask_dashboard', daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        from flask import Flask, Response, jsonify
+
+        app = Flask(__name__)
+
+        @app.get('/')
+        def index():
+            return """
+<!doctype html><html><head><title>Rover Dataset Logger</title>
+<style>body{font-family:sans-serif;background:#111;color:#eee}img{max-width:640px;width:95vw;border:2px solid #555}.novel{color:#ff6767}.ok{color:#67ff9a}pre{background:#222;padding:12px;white-space:pre-wrap}</style>
+</head><body>
+<h2>Rover Dataset Logger</h2>
+<img src="/frame" id="frame">
+<h3 id="novelty">novelty: loading</h3>
+<pre id="status">loading</pre>
+<script>
+async function tick(){
+  const r=await fetch('/status'); const s=await r.json();
+  const n=s.novelty||{};
+  document.getElementById('novelty').textContent='novelty='+JSON.stringify(n);
+  document.getElementById('novelty').className=n.is_novel?'novel':'ok';
+  document.getElementById('status').textContent=JSON.stringify(s,null,2);
+  document.getElementById('frame').src='/frame?ts='+Date.now();
+}
+setInterval(tick,500); tick();
+</script></body></html>"""
+
+        @app.get('/status')
+        def status():
+            return jsonify(self.logger.snapshot_status())
+
+        @app.get('/frame')
+        def frame():
+            data = self.logger.latest_frame_bytes()
+            if data is None:
+                return Response(status=204)
+            return Response(data, mimetype='image/jpeg')
+
+        ssl_context = 'adhoc' if self.ssl else None
+        app.run(host=self.host, port=self.port, threaded=True, ssl_context=ssl_context)
 
 
 def parse_args():
@@ -261,6 +387,12 @@ def parse_args():
     parser.add_argument('--steer-timeout', type=float, default=0.32)
     parser.add_argument('--throttle-timeout', type=float, default=0.22)
     parser.add_argument('--control-hz', type=float, default=20.0)
+    parser.add_argument('--web', action='store_true', help='Start Flask dashboard with latest frame/status')
+    parser.add_argument('--web-host', default='0.0.0.0')
+    parser.add_argument('--web-port', type=int, default=8081)
+    parser.add_argument('--web-ssl', action='store_true', help='Use Flask adhoc HTTPS certificate')
+    parser.add_argument('--novelty', action='store_true', help='Compute VMM novelty for dashboard/log rows')
+    parser.add_argument('--novelty-fps', type=float, default=1.0)
     return parser.parse_args()
 
 
@@ -291,6 +423,8 @@ def main():
         sensor_hz=args.sensor_hz,
         camera_fps=args.camera_fps,
         jpeg_quality=args.jpeg_quality,
+        novelty_enabled=args.novelty,
+        novelty_fps=args.novelty_fps,
     )
 
     manifest = {
@@ -318,6 +452,12 @@ def main():
     control_period = 1.0 / float(args.control_hz)
     try:
         logger.start(manifest)
+        dashboard = None
+        if args.web:
+            dashboard = FlaskDashboard(logger, args.web_host, args.web_port, args.web_ssl)
+            dashboard.start()
+            scheme = 'https' if args.web_ssl else 'http'
+            print(f'dashboard: {scheme}://{args.web_host}:{args.web_port}', flush=True)
         fd, old_settings = set_raw_terminal()
         rover.stop_motors()
         while True:
