@@ -128,3 +128,48 @@ executor_loss = curvature_error
 The planner should learn **where/how to explore**. The executor should learn **how to make the tractor actually move like the requested guide on the current terrain**.
 
 RND can provide the novelty part of the reward, but it must be filtered by safety and motion signals. RECON-style memory can estimate revisits/overlap. MTG is the architecture inspiration for later replacing `[curvature, horizon, speed]` with multiple generated local trajectory candidates.
+
+---
+
+## Experiments
+
+### Session 1 — Manual drive, ~30–45 minutes
+
+**Purpose:** Validate VMM perceptual quality on real camera input, independent of RL.
+
+**Protocol:**
+- Drive the rover manually through every room in the apartment, entering each room at least twice — once fresh, once as a revisit.
+- One pass with normal lighting, one pass with one room's light off or curtains drawn (lighting-variation false-novelty test).
+- Total: 3–4 rooms × 2 passes × 2 lighting conditions ≈ 20–30 minutes of logged data.
+- Place a unique visible object in each room before starting (red chair cushion, plant, poster) — makes room labels unambiguous in cluster plots and novelty spikes obvious to reviewers.
+
+**Figures:**
+
+**Figure A — Novelty score over time (MobileNet-VMM vs classical baseline)**
+Dual time-series plot. X-axis: time in seconds. Y-axis: novelty score. Annotated with vertical lines at room transitions ("entered kitchen t=34s", "re-entered hallway t=71s"). MobileNet should spike at transitions and decay on revisits faster than the classical baseline.
+
+**Figure B — Embedding cluster separability**
+Every 5th frame from the manual drive. Compute MobileNet-VMM embeddings and classical embeddings, run UMAP or t-SNE on each, color by room label (ground truth known from manual drive). MobileNet clusters should separate by room more cleanly. Two panels side by side, four colors for four rooms.
+
+---
+
+### Session 2 — Autonomous RL deployment, ~1–2 hours
+
+**Purpose:** Demonstrate that the trained system actually explores the apartment autonomously.
+
+**Setup:** Deploy the sim-trained SAC planner with the MobileNet-VMM novelty signal and the deterministic arc controller. Zero-shot sim-to-real — do not retrain on the rover. Run 3–5 episodes of fixed duration (3–5 minutes per episode, enough to visit 2–3 rooms).
+
+**Log:** All sensor data, embeddings, novelty scores, motor commands, and an approximate top-down trajectory reconstructed from IMU integration + motor commands (will drift, but visually interpretable for a single episode).
+
+**Figures:**
+
+**Figure C — Autonomous trajectory with novelty overlay**
+2D approximate top-down path of the rover through the apartment, colored by VMM novelty score at each point (cool = low novelty, warm = high). Warm patches in rooms entered for the first time, cool patches on return paths. Annotate with "novel place found" markers where the metric fires.
+
+**Figure D — Novel-places-found over time, autonomous run**
+X-axis: time in seconds. Y-axis: cumulative novel-places-found count. Full system vs random-walk baseline (forward + random turns, no RL). A step-function that climbs faster than random is sufficient — does not need to beat frontier exploration.
+
+**Practical notes:**
+- Run the emergency stop on a separate thread, tested before starting. One stuck rover wastes 20 minutes.
+- If zero-shot transfer performs poorly, report it honestly as a limitation: "zero-shot transfer shows reduced exploration speed relative to sim; we attribute this to the visual domain gap between rendered and real apartment frames." This is an honest negative finding that fits RLxF.
+- Three successful episodes with clean logs beats one perfect episode. Run multiple short episodes rather than one long one.
