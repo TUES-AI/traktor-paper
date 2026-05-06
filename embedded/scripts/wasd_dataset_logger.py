@@ -160,6 +160,7 @@ class DatasetLogger:
         control,
         sensor_hz,
         camera_fps,
+        stream_fps,
         jpeg_quality,
         novelty_enabled=False,
         novelty_fps=1.0,
@@ -171,6 +172,7 @@ class DatasetLogger:
         self.control = control
         self.sensor_period = 1.0 / float(sensor_hz)
         self.camera_period = 1.0 / float(camera_fps)
+        self.stream_period = 0.0 if float(stream_fps) <= 0 else 1.0 / float(stream_fps)
         self.jpeg_quality = int(jpeg_quality)
         self.novelty_enabled = bool(novelty_enabled)
         self.novelty_period = 1.0 / max(float(novelty_fps), 1e-6)
@@ -179,6 +181,7 @@ class DatasetLogger:
         self.latest_command = {}
         self.latest_status = {}
         self.latest_jpeg = None
+        self.latest_jpeg_seq = 0
         self.latest_frame_meta = {}
         self.latest_gyro_z = 0.0
         self.latest_novelty = None
@@ -232,6 +235,10 @@ class DatasetLogger:
         with self.lock:
             return self.latest_jpeg
 
+    def latest_frame_payload(self):
+        with self.lock:
+            return self.latest_jpeg_seq, self.latest_jpeg
+
     def _snapshot_command(self):
         with self.lock:
             return dict(self.latest_command)
@@ -271,48 +278,62 @@ class DatasetLogger:
             time.sleep(max(0.0, next_t - time.monotonic()))
 
     def _camera_loop(self):
-        next_t = time.monotonic()
+        next_log_t = time.monotonic()
+        next_stream_t = time.monotonic()
         params = [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
         while not self.stop_event.is_set():
             t0_ns = now_ns()
             try:
                 with self.lock:
                     gyro_z = self.latest_gyro_z
-                if abs(gyro_z) > GYRO_Z_ROTATING_THRESHOLD:
-                    next_t += self.camera_period
-                    time.sleep(max(0.0, next_t - time.monotonic()))
-                    continue
                 frame = self.rover.get_camera_frame()
                 encoded_ok, encoded = cv2.imencode('.jpg', frame, params)
-                rel = f'frames/frame_{self.frame_index:06d}.jpg'
-                path = self.root / rel
-                if encoded_ok:
-                    path.write_bytes(encoded.tobytes())
-                ok = bool(encoded_ok)
-                row = {
-                    'type': 'frame',
-                    't_wall_s': now_s(),
-                    't_ns': t0_ns,
-                    'frame_index': self.frame_index,
-                    'path': rel,
-                    'shape': list(frame.shape),
-                    'ok': bool(ok),
-                    'command': self._snapshot_command(),
-                }
-                novelty = self._maybe_compute_novelty(frame)
-                if novelty is not None:
-                    row['novelty'] = novelty
                 with self.lock:
                     self.latest_jpeg = encoded.tobytes() if encoded_ok else None
-                    self.latest_frame_meta = row
-                    if novelty is not None:
-                        self.latest_novelty = novelty
-                self.frame_index += 1
+                    self.latest_jpeg_seq += 1
+
+                now = time.monotonic()
+                if now >= next_log_t:
+                    while next_log_t <= now:
+                        next_log_t += self.camera_period
+                    row = {
+                        'type': 'frame',
+                        't_wall_s': now_s(),
+                        't_ns': t0_ns,
+                        'frame_index': self.frame_index,
+                        'shape': list(frame.shape),
+                        'stream_ok': bool(encoded_ok),
+                        'gyro_z': gyro_z,
+                        'command': self._snapshot_command(),
+                    }
+                    if abs(gyro_z) > GYRO_Z_ROTATING_THRESHOLD:
+                        row['type'] = 'frame_skipped'
+                        row['reason'] = 'rotating'
+                    else:
+                        rel = f'frames/frame_{self.frame_index:06d}.jpg'
+                        path = self.root / rel
+                        if encoded_ok:
+                            path.write_bytes(encoded.tobytes())
+                        row['path'] = rel
+                        row['ok'] = bool(encoded_ok)
+                        novelty = self._maybe_compute_novelty(frame)
+                        if novelty is not None:
+                            row['novelty'] = novelty
+                    with self.lock:
+                        self.latest_frame_meta = row
+                        if row.get('novelty') is not None:
+                            self.latest_novelty = row['novelty']
+                    self._write_row(row)
+                    self.frame_index += 1
             except Exception as exc:
                 row = {'type': 'frame_error', 't_wall_s': now_s(), 't_ns': t0_ns, 'error': repr(exc)}
-            self._write_row(row)
-            next_t += self.camera_period
-            time.sleep(max(0.0, next_t - time.monotonic()))
+                self._write_row(row)
+                next_log_t += self.camera_period
+            if self.stream_period > 0:
+                next_stream_t += self.stream_period
+                time.sleep(max(0.0, next_stream_t - time.monotonic()))
+            else:
+                time.sleep(0.001)
 
     def _maybe_compute_novelty(self, frame):
         if not self.novelty_enabled or self.vmm is None:
@@ -378,7 +399,7 @@ img{max-width:100%;width:100%;border-radius:10px;border:1px solid #303a4c}
   <h2>Rover Dataset Logger</h2>
   <div class="grid">
     <div class="card">
-      <img src="/frame" id="frame">
+      <img src="/stream" id="frame">
       <div class="muted mono" id="dataset">dataset: loading</div>
     </div>
     <div class="card">
@@ -448,7 +469,6 @@ async function tick(){
   document.getElementById('ls').textContent=fmt(c.left_speed);
   document.getElementById('rs').textContent=fmt(c.right_speed);
   document.getElementById('keys').textContent=(c.active_keys||[]).join(',');
-  document.getElementById('frame').src='/frame?ts='+Date.now();
 }
 setInterval(tick,500); tick();
 </script></body></html>"""
@@ -464,6 +484,24 @@ setInterval(tick,500); tick();
                 return Response(status=204)
             return Response(data, mimetype='image/jpeg')
 
+        @app.get('/stream')
+        def stream():
+            def generate():
+                last_seq = -1
+                while True:
+                    seq, data = self.logger.latest_frame_payload()
+                    if data is None or seq == last_seq:
+                        time.sleep(0.005)
+                        continue
+                    last_seq = seq
+                    yield (
+                        b'--frame\r\n'
+                        b'Content-Type: image/jpeg\r\n'
+                        b'Cache-Control: no-cache\r\n\r\n' + data + b'\r\n'
+                    )
+
+            return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
         ssl_context = 'adhoc' if self.ssl else None
         app.run(host=self.host, port=self.port, threaded=True, ssl_context=ssl_context)
 
@@ -473,7 +511,8 @@ def parse_args():
     parser.add_argument('--out-root', default='data/manual_runs')
     parser.add_argument('--name', default=None)
     parser.add_argument('--sensor-hz', type=float, default=20.0)
-    parser.add_argument('--camera-fps', type=float, default=5.0)
+    parser.add_argument('--camera-fps', type=float, default=5.0, help='Disk logging and VMM/novelty FPS')
+    parser.add_argument('--stream-fps', type=float, default=0.0, help='Web stream FPS cap; 0 means camera-limited')
     parser.add_argument('--jpeg-quality', type=int, default=85)
     parser.add_argument('--forward-speed', type=float, default=85.0)
     parser.add_argument('--reverse-speed', type=float, default=60.0)
@@ -517,6 +556,7 @@ def main():
         control=control,
         sensor_hz=args.sensor_hz,
         camera_fps=args.camera_fps,
+        stream_fps=args.stream_fps,
         jpeg_quality=args.jpeg_quality,
         novelty_enabled=args.novelty,
         novelty_fps=args.novelty_fps,
