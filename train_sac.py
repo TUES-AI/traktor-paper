@@ -57,6 +57,28 @@ R_SAFETY = -0.2
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
+def _benchmark_metrics(inner):
+    coverage = inner._coverage() * 100
+    collisions = int(inner._collisions)
+    bumper_total = int(inner._bumper_triggers)
+    total_reward = float(inner._total_reward)
+    steps = int(inner.step_count)
+    elapsed_s = steps * 0.05
+    return {
+        "coverage": coverage,
+        "collisions": collisions,
+        "bumper_total": bumper_total,
+        "total_reward": total_reward,
+        "coverage_per_collision": coverage / max(collisions, 1),
+        "collisions_per_coverage": collisions / max(coverage, 1e-6),
+        "coverage_per_1k_steps": coverage / max(steps / 1000.0, 1e-6),
+        "reward_per_1k_steps": total_reward / max(steps / 1000.0, 1e-6),
+        "collisions_per_1k_steps": collisions / max(steps / 1000.0, 1e-6),
+        "bumper_per_1k_steps": bumper_total / max(steps / 1000.0, 1e-6),
+        "elapsed_s": elapsed_s,
+    }
+
 # -- Safety penalty wrapper -----------------------------------------------------
 
 class SafetyPenaltyWrapper(gym.Wrapper):
@@ -391,11 +413,7 @@ class TrackCallback(BaseCallback):
         if self.num_timesteps >= self._next_eval:
             self._next_eval += EVAL_EVERY
             inner = _unwrap_inner(self.training_env.envs[0])
-            m = {
-                "coverage":     inner._coverage() * 100,
-                "collisions":   inner._collisions,
-                "bumper_total": inner._bumper_triggers,
-            }
+            m = _benchmark_metrics(inner)
             self.checkpoints.append((inner.step_count, m))
 
             vmm = self._vmm_wrapper()
@@ -530,11 +548,7 @@ def _run_boustrophedon(furniture, seed):
             obs, _, _, _, _ = env.step(_act(obs))
             pbar.update(1)
             if env.step_count >= next_eval:
-                m = {
-                    "coverage":     env._coverage() * 100,
-                    "collisions":   env._collisions,
-                    "bumper_total": env._bumper_triggers,
-                }
+                m = _benchmark_metrics(env)
                 checkpoints.append((env.step_count, m))
                 pbar.set_postfix({"cov": f"{m['coverage']:.1f}%",
                                   "col": m["collisions"]})
@@ -552,11 +566,38 @@ def _save_csv(all_ckpts, label, out_dir):
     out_dir.mkdir(exist_ok=True)
     for seed, ckpts in zip(SEEDS, all_ckpts):
         path = out_dir / f"{label}_seed{seed}.csv"
+        metric_keys = list(ckpts[0][1].keys()) if ckpts else []
         with open(path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["step", "coverage", "collisions", "bumper_total"])
+            writer = csv.DictWriter(f, fieldnames=["step"] + metric_keys)
             writer.writeheader()
             for step, m in ckpts:
                 writer.writerow({"step": step, **m})
+        print(f"  Saved {path}")
+
+
+def _save_rnd_csv(all_rnd_logs, out_dir):
+    import csv, pathlib
+    out_dir = pathlib.Path(out_dir)
+    out_dir.mkdir(exist_ok=True)
+    for seed, log in zip(SEEDS, all_rnd_logs):
+        if not log:
+            continue
+        path = out_dir / f"rnd_training_seed{seed}.csv"
+        scalar_keys = [
+            "step", "rnd_loss_mean", "rnd_loss_std", "novelty_mean",
+            "novelty_std", "fov_L_mean", "fov_C_mean", "fov_R_mean",
+            "rnd_running_mean",
+        ]
+        probe_keys = [f"probe_error_{i}" for i in range(len(log[0].get("probe_errors", [])))]
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=scalar_keys + probe_keys)
+            writer.writeheader()
+            for entry in log:
+                row = {k: entry.get(k) for k in scalar_keys}
+                row.update({
+                    key: value for key, value in zip(probe_keys, entry.get("probe_errors", []))
+                })
+                writer.writerow(row)
         print(f"  Saved {path}")
 
 
@@ -591,6 +632,7 @@ def train():
     _save_csv(all_boustr,  "boustrophedon", "results")
     _save_csv(all_no_vmm,  "sac_novmm",    "results")
     _save_csv(all_vmm,     "sac_vmm",      "results")
+    _save_rnd_csv(all_rnd_logs, "results")
 
     log_path = pathlib.Path("results") / "rnd_logs.json"
     log_path.write_text(json.dumps(all_rnd_logs, indent=2))
@@ -684,6 +726,9 @@ def plot(all_no_vmm, all_vmm, all_boustr):
         ("Final coverage %",      "coverage",    ".1f"),
         ("Final collisions",      "collisions",  ".1f"),
         ("Final bumper triggers", "bumper_total", ".1f"),
+        ("Coverage / collision",  "coverage_per_collision", ".4f"),
+        ("Collisions / coverage", "collisions_per_coverage", ".1f"),
+        ("Coverage / 1k steps",   "coverage_per_1k_steps", ".3f"),
     ]:
         bm, bs = final_mean_std(all_boustr, key)
         nm, ns = final_mean_std(all_no_vmm, key)
@@ -692,6 +737,60 @@ def plot(all_no_vmm, all_vmm, all_boustr):
               f"{bm:{fmt}} ± {bs:.1f}   "
               f"{nm:{fmt}} ± {ns:.1f}   "
               f"{vm:{fmt}} ± {vs:.1f}")
+
+    _plot_benchmark_metrics(methods)
+
+
+def _plot_benchmark_metrics(methods):
+    """Extra benchmark plots for exploration quality, not just final coverage."""
+    panels = [
+        ("Coverage / Collision", "coverage_per_collision"),
+        ("Collisions / 1k Steps", "collisions_per_1k_steps"),
+        ("Coverage / 1k Steps", "coverage_per_1k_steps"),
+        ("Reward / 1k Steps", "reward_per_1k_steps"),
+    ]
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+    fig.suptitle("Benchmark Efficiency and Safety Metrics", fontweight="bold")
+
+    for label, all_ckpts, color, ls in methods:
+        steps, vals = _align(all_ckpts)
+        elapsed_s = vals.get("elapsed_s", np.tile(steps, (len(all_ckpts), 1)) * 0.05)
+        time_s = elapsed_s.mean(0)
+        for ax, (title, key) in zip(axes.flat, panels):
+            arr = vals[key]
+            mean = arr.mean(0)
+            std = arr.std(0)
+            ax.plot(time_s, mean, color=color, lw=2, ls=ls, label=label)
+            ax.fill_between(time_s, mean - std, mean + std, color=color, alpha=0.16)
+
+    for ax, (title, _) in zip(axes.flat, panels):
+        ax.set_title(title)
+        ax.set_xlabel("Simulated time (s)")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+
+    plt.tight_layout()
+    out = "results/benchmark_metrics.png"
+    plt.savefig(out, dpi=150)
+    plt.close()
+    print(f"Benchmark metrics plot saved -> {out}")
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for label, all_ckpts, color, ls in methods:
+        _, vals = _align(all_ckpts)
+        cov = vals["coverage"]
+        col = vals["collisions"]
+        ax.plot(col.mean(0), cov.mean(0), color=color, lw=2, ls=ls, marker="o", ms=3, label=label)
+    ax.set_title("Coverage vs Collisions")
+    ax.set_xlabel("Collisions")
+    ax.set_ylabel("Coverage %")
+    ax.legend(fontsize=9)
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+    out = "results/coverage_vs_collisions.png"
+    plt.savefig(out, dpi=150)
+    plt.close()
+    print(f"Coverage/collision plot saved -> {out}")
 
 
 # -- RND analysis plot ----------------------------------------------------------

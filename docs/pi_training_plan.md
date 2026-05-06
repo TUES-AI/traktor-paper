@@ -27,6 +27,11 @@ evaluation, while RND uses a simulated egocentric camera embedding instead of
 privileged `(x, y)` coordinates. The Pi version should replace that simulated
 embedding with the MobileNetV3 camera embedding below.
 
+Benchmark outputs now include `coverage_per_collision`,
+`collisions_per_1k_steps`, `coverage_per_1k_steps`, reward-rate metrics,
+`benchmark_metrics.png`, `coverage_vs_collisions.png`, and flat
+`rnd_training_seed*.csv` files for RND decay analysis.
+
 10. Camera → MobileNetV3-Small (pretrained, frozen) → 128-dim embedding
 11. Normalise embedding online with running mean/std (Welford's algorithm)
 12. RND: two small MLPs (256→256), fixed target + trained predictor, both taking the 128-dim embedding
