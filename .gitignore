@@ -29,6 +29,7 @@ build/
 # Logs & outputs
 *.log
 ppo_rover_tb/
+sim_realistic/results/
 
 # Environment secrets
 .env

@@ -116,7 +116,10 @@ class SafetyController:
         try:
             while time.monotonic() - start < max_seconds:
                 distances = self.read_distances()
-                front_clear = distances['front'] is not None and distances['front'] >= self.config.front_clear_to_resume_cm
+                front_clear = (
+                    distances['front'] is not None
+                    and distances['front'] >= self.config.front_clear_to_resume_cm
+                )
                 if front_clear:
                     return {'reason': 'clear', 'yaw_deg': yaw, **distances}
                 turn_safe, _, turn_reason = self.is_turn_safe(direction, distances)

@@ -41,12 +41,24 @@ class LocalTargetExecutor:
     def clip_distance(self, theta_deg, distance_cm, distances):
         allowed = distance_cm
         margin = self.config.obstacle_margin_cm
-        if abs(theta_deg) <= 45 and distances['front'] is not None:
-            allowed = min(allowed, max(20.0, distances['front'] - margin))
-        if theta_deg > 25 and distances['left'] is not None:
-            allowed = min(allowed, max(20.0, distances['left'] - margin))
-        if theta_deg < -25 and distances['right'] is not None:
-            allowed = min(allowed, max(20.0, distances['right'] - margin))
+        if abs(theta_deg) <= 45:
+            front = distances['front']
+            if front is not None and front < margin:
+                return 0.0
+            if front is not None:
+                allowed = min(allowed, max(0.0, front - margin))
+        if theta_deg > 25:
+            left = distances['left']
+            if left is not None and left < margin:
+                allowed = 0.0
+            elif left is not None:
+                allowed = min(allowed, max(0.0, left - margin))
+        if theta_deg < -25:
+            right = distances['right']
+            if right is not None and right < margin:
+                allowed = 0.0
+            elif right is not None:
+                allowed = min(allowed, max(0.0, right - margin))
         return allowed
 
     def execute_local_target(self, x_cm, y_cm):
@@ -131,6 +143,14 @@ class LocalTargetExecutor:
 
     def drive_for(self, distance_cm):
         cfg = self.config
+        if distance_cm <= 0.0:
+            return {'ok': False, 'reason': 'distance_clipped_to_zero', 'seconds': 0.0}
+        distances = self.safety.read_distances()
+        safe, front, threshold = self.safety.is_front_safe(cfg.drive_pwm, distances)
+        if not safe:
+            reason = f'front_safety_stop_before_drive front={front} threshold={threshold:.1f}'
+            self.set_status(reason)
+            return {'ok': False, 'reason': reason, 'seconds': 0.0}
         seconds = max(0.45, min(cfg.max_drive_seconds, distance_cm / cfg.cm_per_second))
         start = time.monotonic()
         self.set_status(f'driving_{distance_cm:.1f}cm')
