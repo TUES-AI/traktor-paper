@@ -52,6 +52,7 @@ class MetricsCallback(BaseCallback):
                 "rooms_seen": len(inner.rooms_seen),
                 "door_crossings": inner.door_crossings,
                 "collisions": inner.collisions,
+                "safety_clamps": inner.safety_clamps,
                 "elapsed": time.time() - self.t0,
             }
             self.rows.append(row)
@@ -73,6 +74,7 @@ def run_deterministic(seed: int, steps: int):
                 "rooms_seen": len(env.rooms_seen),
                 "door_crossings": env.door_crossings,
                 "collisions": env.collisions,
+                "safety_clamps": env.safety_clamps,
                 "elapsed": 0.0,
             })
         if trunc:
@@ -108,14 +110,14 @@ def save_rows(label: str, seed: int, rows: list[dict]):
     OUT.mkdir(parents=True, exist_ok=True)
     path = OUT / f"{label}_seed{seed}.csv"
     with path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["step", "coverage", "rooms_seen", "door_crossings", "collisions", "elapsed"])
+        writer = csv.DictWriter(f, fieldnames=["step", "coverage", "rooms_seen", "door_crossings", "collisions", "safety_clamps", "elapsed"])
         writer.writeheader(); writer.writerows(rows)
     return path
 
 
 def plot(labels: list[str], seed: int):
-    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-    metrics = ["coverage", "rooms_seen", "door_crossings", "collisions"]
+    metrics = ["coverage", "rooms_seen", "door_crossings", "collisions", "safety_clamps"]
+    fig, axes = plt.subplots(1, len(metrics), figsize=(20, 4))
     for label in labels:
         path = OUT / f"{label}_seed{seed}.csv"
         if not path.exists():

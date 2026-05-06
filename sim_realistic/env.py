@@ -19,6 +19,9 @@ SENSOR_MAX = 4.0
 CAM_W = 32
 CAM_H = 16
 CAM_FOV = math.radians(86.0)
+FRONT_STOP_DIST = 0.38
+FRONT_TURN_DIST = 0.55
+SIDE_CLEAR_DIST = 0.25
 
 
 @dataclass(frozen=True)
@@ -60,10 +63,11 @@ class RealisticRoverEnv(gym.Env):
 
     metadata = {"render_modes": ["rgb_array"]}
 
-    def __init__(self, seed: int = 0, render_mode: Optional[str] = None, max_steps: int = 2000):
+    def __init__(self, seed: int = 0, render_mode: Optional[str] = None, max_steps: int = 2000, use_safety: bool = True):
         super().__init__()
         self.render_mode = render_mode
         self.max_steps = max_steps
+        self.use_safety = use_safety
         self._rng = np.random.default_rng(seed)
         self._seed = seed
         self.action_space = spaces.Box(
@@ -84,6 +88,7 @@ class RealisticRoverEnv(gym.Env):
         self.accel = 0.0
         self.steps = 0
         self.collisions = 0
+        self.safety_clamps = 0
         self.visited = np.zeros((60, 90), dtype=bool)
         self.rooms_seen: set[int] = set()
         self.door_crossings = 0
@@ -206,6 +211,7 @@ class RealisticRoverEnv(gym.Env):
         self.vl = self.vr = self.yaw_rate = self.accel = 0.0
         self.last_turn = self.last_speed = 0.0
         self.steps = self.collisions = self.door_crossings = 0
+        self.safety_clamps = 0
         self.visited[:] = False
         self.rooms_seen = {self._room_id(self.x, self.y)}
         self._prev_room = self._room_id(self.x, self.y)
@@ -218,9 +224,53 @@ class RealisticRoverEnv(gym.Env):
         r = int(np.clip(self.y / WORLD_H * self.visited.shape[0], 0, self.visited.shape[0] - 1))
         self.visited[r, c] = True
 
+    def _safety_filter(self, turn: float, speed: float):
+        proposed = np.array([turn, speed], dtype=np.float32)
+        if not self.use_safety:
+            return turn, speed, False, proposed, proposed.copy(), "disabled"
+
+        left, right, front = [float(x) * SENSOR_MAX for x in self._sensors()]
+        clamped = False
+        reason = "clear"
+
+        # Pure in-place tank rotation is always allowed, matching the hardware
+        # safety rule. Side ranges only matter when the rover translates.
+        is_pure_spin = abs(speed) < 0.05 and abs(turn) > 0.25
+        if is_pure_spin:
+            executed = proposed.copy()
+            return turn, speed, False, proposed, executed, "pure_spin_allowed"
+
+        if speed > 0.05 and front < FRONT_STOP_DIST:
+            turn = 1.0 if left >= right else -1.0
+            speed = 0.0
+            clamped = True
+            reason = "front_stop_spin"
+        elif speed > 0.05 and front < FRONT_TURN_DIST:
+            turn = max(turn, 0.75) if left >= right else min(turn, -0.75)
+            speed = min(speed, 0.20)
+            clamped = True
+            reason = "front_slow_turn"
+
+        if speed > 0.05 and left < SIDE_CLEAR_DIST:
+            turn = min(turn, -0.65)
+            speed = min(speed, 0.25)
+            clamped = True
+            reason = "left_side_clearance"
+        if speed > 0.05 and right < SIDE_CLEAR_DIST:
+            turn = max(turn, 0.65)
+            speed = min(speed, 0.25)
+            clamped = True
+            reason = "right_side_clearance"
+
+        executed = np.array([turn, speed], dtype=np.float32)
+        return turn, speed, clamped, proposed, executed, reason
+
     def step(self, action):
-        turn = float(np.clip(action[0], -1, 1))
-        speed = float(np.clip(action[1], -1, 1))
+        raw_turn = float(np.clip(action[0], -1, 1))
+        raw_speed = float(np.clip(action[1], -1, 1))
+        turn, speed, safety_clamped, proposed_action, executed_action, safety_reason = self._safety_filter(raw_turn, raw_speed)
+        if safety_clamped:
+            self.safety_clamps += 1
         self.last_turn, self.last_speed = turn, speed
         vl_cmd = np.clip(speed - turn, -1, 1) * MAX_SPEED
         vr_cmd = np.clip(speed + turn, -1, 1) * MAX_SPEED
@@ -257,7 +307,15 @@ class RealisticRoverEnv(gym.Env):
         terminated = False
         # Physical training is continuous; external scripts decide how long to run.
         truncated = False
-        return self._obs(), float(reward), terminated, truncated, self._info(dist, collided)
+        info = self._info(dist, collided)
+        info.update({
+            "safety_clamped": safety_clamped,
+            "safety_clamps": self.safety_clamps,
+            "safety_reason": safety_reason,
+            "proposed_action": proposed_action,
+            "executed_action": executed_action,
+        })
+        return self._obs(), float(reward), terminated, truncated, info
 
     def _info(self, dist: float, collided: bool):
         return {
@@ -265,6 +323,7 @@ class RealisticRoverEnv(gym.Env):
             "rooms_seen": len(self.rooms_seen),
             "door_crossings": self.door_crossings,
             "collisions": self.collisions,
+            "safety_clamps": self.safety_clamps,
             "distance": dist,
             "collided": collided,
             "pose": (self.x, self.y, self.theta),

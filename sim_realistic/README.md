@@ -19,6 +19,11 @@ Agent observations and rewards do **not** include:
 - coverage grid
 - synthetic lookahead from hidden map state
 
+Every action goes through a deterministic rover-style safety filter before
+physics, matching the real stack's separation between proposed and executable
+motion. Pure in-place spins are allowed, while forward motion is slowed or
+replaced with a spin when the front/side local ranges are too close.
+
 Ground truth appears only in `info` and result CSVs for evaluation.
 
 ## Methods
@@ -41,3 +46,4 @@ The metrics are hidden from the agent and used only for evaluation:
 - rooms reached
 - door crossings
 - collisions
+- safety clamps
