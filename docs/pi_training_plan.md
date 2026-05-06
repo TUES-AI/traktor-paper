@@ -37,7 +37,11 @@ spurious new places.
 Benchmark outputs now include `coverage_per_collision`,
 `collisions_per_1k_steps`, `coverage_per_1k_steps`, reward-rate metrics,
 `benchmark_metrics.png`, `coverage_vs_collisions.png`, and flat
-`rnd_training_seed*.csv` files for RND decay analysis.
+`rnd_training_seed*.csv` / `vmm_steps_seed*.csv` files for RND, cluster,
+and motion-gated novelty analysis. Ablations can be run with
+`python train_sac.py --vmm-mode rnd`, `--vmm-mode memory`,
+`--vmm-mode rnd_memory`, and `--no-smoothing`. Manual frame logs can be
+analyzed with `python tools/analyze_vmm_manual_drive.py --frames <dir>`.
 
 10. Camera → MobileNetV3-Small (pretrained, frozen) → 128-dim embedding
 11. Normalise embedding online with running mean/std (Welford's algorithm)

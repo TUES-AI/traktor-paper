@@ -113,8 +113,15 @@ _MEMORY_KNOWN_DIST = 0.08
 _MEMORY_UPDATE_RATE = 0.05
 _MEMORY_NORM_DIST  = 0.18
 _MEMORY_SMOOTH_WINDOW = 5
+_MEMORY_SMOOTH_RESET_DIST = 0.30
 _RND_WEIGHT        = 0.65
 _MEMORY_WEIGHT     = 0.35
+_NOVELTY_PERSIST_WINDOW = 3
+_SPIN_GATE_DISPLACEMENT = 0.05
+_SPIN_GATE_YAW_DELTA    = np.radians(20.0)
+_SPIN_GATE_SCALE        = 0.3
+_VMM_MODE               = "rnd_memory"  # "rnd", "memory", "rnd_memory"
+_VMM_USE_SMOOTHING      = True
 
 
 class _RNDTarget(torch.nn.Module):
@@ -194,17 +201,37 @@ class _ClusterMemory:
 
 class _TemporalEmbeddingSmoother:
     """Mean-pool recent embeddings before visual-place clustering."""
-    def __init__(self, window=_MEMORY_SMOOTH_WINDOW):
+    def __init__(self, window=_MEMORY_SMOOTH_WINDOW, reset_dist=_MEMORY_SMOOTH_RESET_DIST):
         self._buf = deque(maxlen=window)
+        self._reset_dist = reset_dist
+        self.last_reset = False
 
     def reset(self):
         self._buf.clear()
+        self.last_reset = False
 
     def push(self, x):
         z = torch.nn.functional.normalize(x.detach().squeeze(0), dim=0)
+        self.last_reset = False
+        if self._buf:
+            prev = torch.nn.functional.normalize(torch.stack(list(self._buf)).mean(dim=0), dim=0)
+            dist = float(1.0 - torch.dot(prev, z).item())
+            if dist > self._reset_dist:
+                self._buf.clear()
+                self.last_reset = True
         self._buf.append(z.cpu())
         smooth = torch.stack(list(self._buf)).mean(dim=0)
         return torch.nn.functional.normalize(smooth, dim=0)
+
+
+def _combine_novelty(rnd_norm, mem_norm, mode=_VMM_MODE):
+    if mode == "rnd":
+        return float(rnd_norm)
+    if mode == "memory":
+        return float(mem_norm)
+    if mode == "rnd_memory":
+        return float(np.clip(_RND_WEIGHT * rnd_norm + _MEMORY_WEIGHT * mem_norm, 0.0, 1.0))
+    raise ValueError("VMM mode must be 'rnd', 'memory', or 'rnd_memory'")
 
 
 class VMMObsWrapper(gym.Wrapper):
@@ -224,8 +251,14 @@ class VMMObsWrapper(gym.Wrapper):
     Reward bonus: novelty * _VMM_NOVELTY_SCALE every step (after warmup).
     """
 
-    def __init__(self, env):
+    def __init__(self, env, mode=None, use_smoothing=None):
         super().__init__(env)
+        mode = _VMM_MODE if mode is None else mode
+        use_smoothing = _VMM_USE_SMOOTHING if use_smoothing is None else use_smoothing
+        if mode not in ("rnd", "memory", "rnd_memory"):
+            raise ValueError("mode must be 'rnd', 'memory', or 'rnd_memory'")
+        self._mode = mode
+        self._use_smoothing = bool(use_smoothing)
         s = env.observation_space
         # obs = [left, right, front, sin(θ), cos(θ), novelty,
         #        fov_L, fov_C, fov_R, yaw_rate, vl, vr] — 12-dim
@@ -246,7 +279,10 @@ class VMMObsWrapper(gym.Wrapper):
         self._mem_novelty  = 0.0
         self._cluster_id   = None
         self._new_cluster  = False
+        self._reward_novelty = 0.0
+        self._novelty_window = deque(maxlen=_NOVELTY_PERSIST_WINDOW)
         self._global_steps = 0  # never resets — warmup is global, not per-episode
+        self._step_log = []
 
         # RND diagnostics — accumulated between eval checkpoints
         self._diag_raw_losses  = []   # raw RND loss every step
@@ -257,6 +293,7 @@ class VMMObsWrapper(gym.Wrapper):
         self._diag_memory_size = []   # bank size every step
         self._diag_new_clusters = []  # cluster creations every step
         self._diag_smooth_window = []  # active smoothing window length
+        self._diag_smooth_resets = []  # abrupt visual transition resets
 
         # Fixed visual probes: synthetic egocentric views with distinct texture
         # phases. They are diagnostics only; policy/RND training never sees room ids.
@@ -338,7 +375,11 @@ class VMMObsWrapper(gym.Wrapper):
         raw = self._rnd_error(x, update=True)
         rnd_norm = self._normalise_rnd(raw, update_stats=True)
 
-        z_smooth = self._smoother.push(x)
+        z_smooth = (
+            self._smoother.push(x)
+            if self._use_smoothing
+            else torch.nn.functional.normalize(x.detach().squeeze(0), dim=0)
+        )
         mem_dist, _, cluster_idx = self._memory.query(z_smooth.unsqueeze(0).to(x.device))
         mem_norm = float(np.clip(mem_dist / _MEMORY_NORM_DIST, 0.0, 1.0))
         new_cluster = False
@@ -346,7 +387,9 @@ class VMMObsWrapper(gym.Wrapper):
             cluster_idx, new_cluster = self._memory.update(
                 z_smooth, mem_dist, cluster_idx, self._global_steps)
 
-        combined = float(np.clip(_RND_WEIGHT * rnd_norm + _MEMORY_WEIGHT * mem_norm, 0.0, 1.0))
+        combined = _combine_novelty(rnd_norm, mem_norm, self._mode)
+        if new_cluster:
+            combined = max(combined, mem_norm)
 
         self._diag_raw_losses.append(raw)
         self._diag_novelties.append(combined)
@@ -355,6 +398,7 @@ class VMMObsWrapper(gym.Wrapper):
         self._diag_memory_size.append(self._memory.size)
         self._diag_new_clusters.append(1.0 if new_cluster else 0.0)
         self._diag_smooth_window.append(len(self._smoother._buf))
+        self._diag_smooth_resets.append(1.0 if self._smoother.last_reset else 0.0)
         self._rnd_novelty = rnd_norm
         self._mem_novelty = mem_norm
         self._cluster_id = cluster_idx
@@ -371,9 +415,19 @@ class VMMObsWrapper(gym.Wrapper):
             rnd_norm = self._normalise_rnd(self._rnd_error(x_t, update=False), update_stats=False)
             mem_dist, _, _ = self._memory.query(x_t)
             mem_norm = float(np.clip(mem_dist / _MEMORY_NORM_DIST, 0.0, 1.0))
-            combined = float(np.clip(_RND_WEIGHT * rnd_norm + _MEMORY_WEIGHT * mem_norm, 0.0, 1.0))
+            combined = _combine_novelty(rnd_norm, mem_norm, self._mode)
             result.append(combined)
         return np.array(result, dtype=np.float32)
+
+    def _reward_novelty_from_motion(self, novelty, info):
+        self._novelty_window.append(float(novelty))
+        persistent = float(np.median(self._novelty_window))
+        displacement = float(info.get("displacement", 0.0))
+        yaw_delta_abs = float(info.get("yaw_delta_abs", 0.0))
+        gate = _SPIN_GATE_SCALE if (
+            displacement < _SPIN_GATE_DISPLACEMENT and yaw_delta_abs > _SPIN_GATE_YAW_DELTA
+        ) else 1.0
+        return persistent * gate, persistent, gate
 
     def _augment(self, obs, novelty):
         from rover_coverage_env import MAX_WHEEL_SPEED
@@ -402,6 +456,7 @@ class VMMObsWrapper(gym.Wrapper):
         mem_sizes = np.array(self._diag_memory_size) if self._diag_memory_size else np.array([self._memory.size])
         new_clusters = np.array(self._diag_new_clusters) if self._diag_new_clusters else np.array([0.0])
         smooth_windows = np.array(self._diag_smooth_window) if self._diag_smooth_window else np.array([0.0])
+        smooth_resets = np.array(self._diag_smooth_resets) if self._diag_smooth_resets else np.array([0.0])
 
         # Probe: evaluate RND on each fixed state — no gradient, no predictor update
         with torch.no_grad():
@@ -430,6 +485,8 @@ class VMMObsWrapper(gym.Wrapper):
             "new_clusters":      int(new_clusters.sum()),
             "new_cluster_rate":  float(new_clusters.mean()),
             "smooth_window_mean": float(smooth_windows.mean()),
+            "smooth_resets":     int(smooth_resets.sum()),
+            "smooth_reset_rate": float(smooth_resets.mean()),
         }
         # Reset accumulators
         self._diag_raw_losses.clear()
@@ -440,11 +497,14 @@ class VMMObsWrapper(gym.Wrapper):
         self._diag_memory_size.clear()
         self._diag_new_clusters.clear()
         self._diag_smooth_window.clear()
+        self._diag_smooth_resets.clear()
         return stats
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
         self._novelty = 0.0
+        self._reward_novelty = 0.0
+        self._novelty_window.clear()
         self._smoother.reset()
         return self._augment(obs, self._novelty), info
 
@@ -453,15 +513,44 @@ class VMMObsWrapper(gym.Wrapper):
         self._global_steps += 1
         x = self._rnd_input(obs)
         self._novelty = self._compute_novelty(x)
+        self._reward_novelty, persistent_novelty, motion_gate = self._reward_novelty_from_motion(
+            self._novelty, info)
         if self._global_steps >= _RND_WARMUP:
-            reward += self._novelty * _VMM_NOVELTY_SCALE
+            reward += self._reward_novelty * _VMM_NOVELTY_SCALE
         info["vmm_novelty"] = self._novelty
+        info["reward_novelty"] = self._reward_novelty
+        info["persistent_novelty"] = persistent_novelty
+        info["motion_gate"] = motion_gate
         info["rnd_novelty"] = self._rnd_novelty
         info["mem_novelty"] = self._mem_novelty
         info["memory_size"] = self._memory.size
         info["cluster_id"] = self._cluster_id
         info["new_cluster"] = self._new_cluster
+        self._step_log.append({
+            "step": self._global_steps,
+            "env_step": info.get("steps"),
+            "coverage": info.get("coverage", 0.0) * 100,
+            "collisions": info.get("collisions", 0),
+            "vmm_novelty": self._novelty,
+            "reward_novelty": self._reward_novelty,
+            "persistent_novelty": persistent_novelty,
+            "motion_gate": motion_gate,
+            "rnd_novelty": self._rnd_novelty,
+            "mem_novelty": self._mem_novelty,
+            "memory_size": self._memory.size,
+            "cluster_id": -1 if self._cluster_id is None else self._cluster_id,
+            "new_cluster": int(self._new_cluster),
+            "displacement": info.get("displacement", 0.0),
+            "yaw_delta_abs": info.get("yaw_delta_abs", 0.0),
+            "mode": self._mode,
+            "smoothing": int(self._use_smoothing),
+        })
         return self._augment(obs, self._novelty), reward, term, trunc, info
+
+    def drain_step_log(self):
+        rows = self._step_log
+        self._step_log = []
+        return rows
 
 
 # -- Env factories ---------------------------------------------------------------
@@ -474,14 +563,14 @@ def make_no_vmm_env(furniture, seed, render_mode=None):
     env.use_stuck_respawn = False
     return SafetyPenaltyWrapper(env)
 
-def make_vmm_env(furniture, seed, render_mode=None):
+def make_vmm_env(furniture, seed, render_mode=None, mode=None, use_smoothing=None):
     env = ApartmentContinuousEnv(
         seed=seed, obstacles=furniture, render_mode=render_mode,
         reward_mode="world_feedback",
     )
     env.use_stuck_respawn = False
     env = SafetyPenaltyWrapper(env)
-    return VMMObsWrapper(env)
+    return VMMObsWrapper(env, mode=mode, use_smoothing=use_smoothing)
 
 
 # -- Preview --------------------------------------------------------------------
@@ -531,6 +620,7 @@ class TrackCallback(BaseCallback):
         self.pbar         = pbar
         self.checkpoints  = []
         self.rnd_log      = []
+        self.vmm_step_log = []
         self._next_eval   = EVAL_EVERY
         self._prev_step   = 0
 
@@ -555,6 +645,7 @@ class TrackCallback(BaseCallback):
             vmm = self._vmm_wrapper()
             postfix = {"cov": f"{m['coverage']:.1f}%", "col": m["collisions"], "bumper": m["bumper_total"]}
             if vmm is not None:
+                self.vmm_step_log.extend(vmm.drain_step_log())
                 rnd = vmm.rnd_checkpoint_stats()
                 rnd["step"] = inner.step_count
                 self.rnd_log.append(rnd)
@@ -585,6 +676,9 @@ def _train(factory, label, seed, return_rnd=False):
             seed=seed,
         )
         model.learn(total_timesteps=TRAIN_STEPS, callback=cb)
+        vmm = cb._vmm_wrapper()
+        if vmm is not None:
+            cb.vmm_step_log.extend(vmm.drain_step_log())
         import pathlib
         pathlib.Path("results").mkdir(exist_ok=True)
         model.save(f"results/{label.strip().replace(' ', '_')}.zip")
@@ -594,7 +688,7 @@ def _train(factory, label, seed, return_rnd=False):
     try: inner.close()
     except Exception: pass
     if return_rnd:
-        return cb.checkpoints, cb.rnd_log
+        return cb.checkpoints, cb.rnd_log, cb.vmm_step_log
     return cb.checkpoints
 
 
@@ -725,7 +819,8 @@ def _save_rnd_csv(all_rnd_logs, out_dir):
             "mem_novelty_mean", "mem_novelty_std", "fov_L_mean",
             "fov_C_mean", "fov_R_mean", "rnd_running_mean",
             "memory_size", "memory_size_mean", "new_clusters",
-            "new_cluster_rate", "smooth_window_mean",
+            "new_cluster_rate", "smooth_window_mean", "smooth_resets",
+            "smooth_reset_rate",
         ]
         probe_keys = [f"probe_error_{i}" for i in range(len(log[0].get("probe_errors", [])))]
         with open(path, "w", newline="") as f:
@@ -740,10 +835,27 @@ def _save_rnd_csv(all_rnd_logs, out_dir):
         print(f"  Saved {path}")
 
 
+def _save_vmm_step_csv(all_vmm_step_logs, out_dir):
+    import csv, pathlib
+    out_dir = pathlib.Path(out_dir)
+    out_dir.mkdir(exist_ok=True)
+    for seed, rows in zip(SEEDS, all_vmm_step_logs):
+        if not rows:
+            continue
+        path = out_dir / f"vmm_steps_seed{seed}.csv"
+        fieldnames = list(rows[0].keys())
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"  Saved {path}")
+
+
 def train():
     """Run Boustrophedon, SAC-NoVMM, SAC-VMM on each seed."""
     all_no_vmm, all_vmm, all_boustr = [], [], []
     all_rnd_logs = []
+    all_vmm_step_logs = []
 
     for seed in tqdm(SEEDS, desc="Seeds", unit="seed", dynamic_ncols=True):
         furniture = generate_apartment(np.random.default_rng(seed))
@@ -760,11 +872,14 @@ def train():
             f"SAC-NoVMM s{seed}", seed))
 
         print(f"\n-- SAC-VMM    seed={seed} ---------------------------------")
-        ckpts, rnd_log = _train(
-            lambda s=seed, f=furniture: make_vmm_env(f, s),
-            f"SAC-VMM   s{seed}", seed, return_rnd=True)
+        ckpts, rnd_log, vmm_step_log = _train(
+            lambda s=seed, f=furniture: make_vmm_env(
+                f, s, mode=_VMM_MODE, use_smoothing=_VMM_USE_SMOOTHING),
+            f"SAC-VMM-{_VMM_MODE}{'-smooth' if _VMM_USE_SMOOTHING else '-raw'} s{seed}",
+            seed, return_rnd=True)
         all_vmm.append(ckpts)
         all_rnd_logs.append(rnd_log)
+        all_vmm_step_logs.append(vmm_step_log)
 
     # Save all dataframes
     import json, pathlib
@@ -772,6 +887,7 @@ def train():
     _save_csv(all_no_vmm,  "sac_novmm",    "results")
     _save_csv(all_vmm,     "sac_vmm",      "results")
     _save_rnd_csv(all_rnd_logs, "results")
+    _save_vmm_step_csv(all_vmm_step_logs, "results")
 
     log_path = pathlib.Path("results") / "rnd_logs.json"
     log_path.write_text(json.dumps(all_rnd_logs, indent=2))
@@ -1032,6 +1148,17 @@ def plot_rnd(all_rnd_logs):
 # -- Main -----------------------------------------------------------------------
 
 if __name__ == "__main__":
+    if "--vmm-mode" in sys.argv:
+        idx = sys.argv.index("--vmm-mode")
+        try:
+            _VMM_MODE = sys.argv[idx + 1]
+        except IndexError:
+            raise SystemExit("--vmm-mode requires one of: rnd, memory, rnd_memory")
+        if _VMM_MODE not in ("rnd", "memory", "rnd_memory"):
+            raise SystemExit("--vmm-mode must be one of: rnd, memory, rnd_memory")
+    if "--no-smoothing" in sys.argv:
+        _VMM_USE_SMOOTHING = False
+
     if "--preview" in sys.argv:
         preview()
 

@@ -34,6 +34,7 @@ MEMORY_UPDATE_RATE = 0.05   # centroid adaptation rate for familiar views
 NOVEL_DIST_THR  = 0.12      # cosine distance → "novel"  (pure memory decision)
 MEMORY_NORM_DIST = 0.18     # distance that saturates memory novelty at 1.0
 MEMORY_SMOOTH_WINDOW = 5
+MEMORY_SMOOTH_RESET_DIST = 0.14
 RND_WEIGHT      = 0.65
 MEMORY_WEIGHT   = 0.35
 RND_LR          = 3e-4      # train aggressively — novelty flag controls when, not LR
@@ -153,14 +154,24 @@ class MemoryBank:
 
 
 class TemporalEmbeddingSmoother:
-    def __init__(self, window=MEMORY_SMOOTH_WINDOW):
+    def __init__(self, window=MEMORY_SMOOTH_WINDOW, reset_dist=MEMORY_SMOOTH_RESET_DIST):
         self.buf = deque(maxlen=window)
+        self.reset_dist = reset_dist
+        self.last_reset = False
 
     def reset(self):
         self.buf.clear()
+        self.last_reset = False
 
     def push(self, z):
         z = F.normalize(z.detach().squeeze(0), dim=0)
+        self.last_reset = False
+        if self.buf:
+            prev = F.normalize(torch.stack(list(self.buf)).mean(dim=0), dim=0)
+            dist = float(1.0 - torch.dot(prev, z).item())
+            if dist > self.reset_dist:
+                self.buf.clear()
+                self.last_reset = True
         self.buf.append(z)
         smooth = torch.stack(list(self.buf)).mean(dim=0)
         return F.normalize(smooth, dim=0).unsqueeze(0)
@@ -210,9 +221,11 @@ class VMM:
         rnd_norm = float(np.clip(rnd_raw / (self.rnd_norm.mean + 1e-8), 0.0, 1.0))
         mem_norm = float(np.clip(mem_dist / MEMORY_NORM_DIST, 0.0, 1.0))
         combined = float(np.clip(RND_WEIGHT * rnd_norm + MEMORY_WEIGHT * mem_norm, 0.0, 1.0))
+        if created_cluster:
+            combined = max(combined, mem_norm)
 
         # ── Decision: combined learned + explicit memory novelty ────────────
-        is_novel = (combined > 0.5) and (self.step >= WARMUP_STEPS)
+        is_novel = (created_cluster or combined > 0.5) and (self.step >= WARMUP_STEPS)
 
         self.nov_norm.update(mem_dist)
         self.step += 1
@@ -226,6 +239,7 @@ class VMM:
             "cluster_id": cluster_idx,
             "new_cluster": created_cluster,
             "smooth_window": len(self.smoother.buf),
+            "smooth_reset": self.smoother.last_reset,
             "is_novel":  is_novel,
             "bank_size": len(self.memory.bank),
             "step":      self.step,
@@ -262,6 +276,7 @@ def draw_overlay(frame, r, history):
         f"mem norm  : {r.get('mem_norm', 0.0):.3f}",
         f"combined  : {r['novelty']:.3f}",
         f"smooth    : {r.get('smooth_window', 0)} frames",
+        f"reset     : {int(r.get('smooth_reset', False))}",
     ]
     for i, s in enumerate(stats):
         cv2.putText(vis, s, (20, 120 + i*22),
