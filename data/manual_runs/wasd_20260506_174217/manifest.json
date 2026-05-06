@@ -1,0 +1,34 @@
+{
+  "args": {
+    "arc_inner_scale": 0.45,
+    "camera_fps": 5.0,
+    "control_hz": 20.0,
+    "forward_speed": 85.0,
+    "jpeg_quality": 85,
+    "name": null,
+    "novelty": true,
+    "novelty_fps": 1.0,
+    "out_root": "data/manual_runs",
+    "reverse_speed": 60.0,
+    "sensor_hz": 20.0,
+    "spin_speed": 70.0,
+    "steer_timeout": 0.32,
+    "throttle_timeout": 0.22,
+    "web": true,
+    "web_host": "0.0.0.0",
+    "web_port": 8081,
+    "web_ssl": false
+  },
+  "controls": {
+    "a": "spin left while stopped / steer left while moving",
+    "d": "spin right while stopped / steer right while moving",
+    "e": "forward + right arc",
+    "esc": "quit",
+    "q": "forward + left arc",
+    "s": "reverse",
+    "w": "forward",
+    "x_or_space": "full stop"
+  },
+  "run_dir": "data/manual_runs/wasd_20260506_174217",
+  "script": "wasd_dataset_logger.py"
+}
