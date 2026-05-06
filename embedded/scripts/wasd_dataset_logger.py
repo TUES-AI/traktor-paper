@@ -331,6 +331,7 @@ class DatasetLogger:
                 'is_novel': bool(result.get('is_novel', False)),
                 'cluster_id': result.get('cluster_id', None),
                 'new_cluster': bool(result.get('new_cluster', False)),
+                'smooth_window': int(result.get('smooth_window', 0)),
                 'bank_size': int(result.get('bank_size', 0)),
                 'step': int(result.get('step', 0)),
             }
@@ -391,6 +392,7 @@ img{max-width:100%;width:100%;border-radius:10px;border:1px solid #303a4c}
         <div class="pill mono">mem_norm: <span id="mnorm">--</span></div>
         <div class="pill mono">cluster: <span id="cluster">--</span></div>
         <div class="pill mono">new: <span id="newcl">--</span></div>
+        <div class="pill mono">smooth: <span id="smooth">--</span></div>
       </div>
       <h3 style="margin:14px 0 8px">IMU / Rotation</h3>
       <div class="row mono">
@@ -433,6 +435,7 @@ async function tick(){
   document.getElementById('cluster').textContent=(cid!==undefined&&cid!==null)?String(cid):'--';
   document.getElementById('newcl').textContent=(n.new_cluster===undefined)?'--':String(n.new_cluster);
   document.getElementById('newcl').className=n.new_cluster?'warn':'good';
+  document.getElementById('smooth').textContent=(n.smooth_window!==undefined)?String(n.smooth_window):'--';
   const gyro=s.gyro_z;
   document.getElementById('gyro').textContent=(typeof gyro==='number')?gyro.toFixed(1):'--';
   const camok=Math.abs(gyro||0)<40;
