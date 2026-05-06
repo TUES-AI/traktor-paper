@@ -4,11 +4,16 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 PYTHON_BIN="${PYTHON_BIN:-/home/yasen/.venv/bin/python}"
-MODEL_PATH="${1:-results/SAC-VMM___s42.zip}"
-shift || true
+EXTRA_ARGS=()
+if [[ "${1:-}" != "" && "${1:-}" != --* ]]; then
+  EXTRA_ARGS+=(--model "$1")
+  shift
+fi
+if [[ "${SAC_MODE:-}" != "" ]]; then
+  EXTRA_ARGS+=(--mode "$SAC_MODE")
+fi
 
 exec "$PYTHON_BIN" embedded/scripts/run_sac_vmm_local_targets.py \
-  --model "$MODEL_PATH" \
   --steps "${SAC_STEPS:-20}" \
   --sleep "${SAC_SLEEP:-0.25}" \
   --max-theta-deg "${SAC_MAX_THETA_DEG:-75}" \
@@ -18,4 +23,5 @@ exec "$PYTHON_BIN" embedded/scripts/run_sac_vmm_local_targets.py \
   --drive-pwm "${SAC_DRIVE_PWM:-90}" \
   --front-stop-cm "${SAC_FRONT_STOP_CM:-45}" \
   --front-clear-cm "${SAC_FRONT_CLEAR_CM:-55}" \
+  "${EXTRA_ARGS[@]}" \
   "$@"
