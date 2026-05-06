@@ -13,4 +13,8 @@ exec "$PYTHON_BIN" embedded/scripts/train_real_predictive_sac.py \
   --max-distance-cm "${PREDICTIVE_MAX_DISTANCE_CM:-80}" \
   --turn-pwm "${PREDICTIVE_TURN_PWM:-65}" \
   --drive-pwm "${PREDICTIVE_DRIVE_PWM:-75}" \
+  --path-revisit-penalty "${PREDICTIVE_PATH_REVISIT_PENALTY:-0.45}" \
+  --path-away-bonus "${PREDICTIVE_PATH_AWAY_BONUS:-0.25}" \
+  --path-near-radius-m "${PREDICTIVE_PATH_NEAR_RADIUS_M:-0.45}" \
+  --path-far-radius-m "${PREDICTIVE_PATH_FAR_RADIUS_M:-1.5}" \
   "$@"

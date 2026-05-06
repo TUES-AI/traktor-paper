@@ -37,3 +37,6 @@ sim_realistic/results/
 
 # Pi sync temp files
 /tmp_sync/
+
+logs/
+results/*.zip

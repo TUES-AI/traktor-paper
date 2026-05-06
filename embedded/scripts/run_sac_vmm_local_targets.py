@@ -304,8 +304,39 @@ class PCVMRoverObsBuilder(RealRoverObsBuilder):
 
             self.model = PCVM()
         self.last_t = time.monotonic()
+        self.pose_x = 0.0
+        self.pose_y = 0.0
+        self.pose_yaw = 0.0
+        self.travel_m = 0.0
 
-    def build_pcvm(self, last_executed_action=None):
+    def _update_executed_pose(self, execution_feedback):
+        if not execution_feedback:
+            return None
+        execution = execution_feedback.get('execution') if isinstance(execution_feedback, dict) else None
+        recovery = execution_feedback.get('recovery') if isinstance(execution_feedback, dict) else None
+        yaw_deg = 0.0
+        distance_cm = 0.0
+        moved = False
+        stuck = False
+        if recovery:
+            report = recovery.get('recovery') or {}
+            yaw_deg += float(report.get('yaw_deg') or 0.0)
+        if execution:
+            turn = execution.get('turn') or {}
+            yaw_deg += float(turn.get('yaw_deg') or 0.0)
+            distance_cm = max(0.0, float(execution.get('clipped_distance_cm') or 0.0))
+            moved = distance_cm > 1.0
+            reason = str(execution.get('reason') or '') + ' ' + str((execution.get('drive') or {}).get('reason') or '')
+            stuck = (not moved) or ('front_safety_stop' in reason) or ('distance_clipped_to_zero' in reason)
+        self.pose_yaw += math.radians(yaw_deg)
+        distance_m = distance_cm / 100.0
+        self.pose_x += math.cos(self.pose_yaw) * distance_m
+        self.pose_y += math.sin(self.pose_yaw) * distance_m
+        self.travel_m += distance_m
+        return yaw_deg, distance_cm, moved, stuck
+
+    def build_pcvm(self, last_executed_action=None, execution_feedback=None):
+        executed_motion = self._update_executed_pose(execution_feedback)
         self.update_imu()
         distances = self.safety.read_distances()
         sensors = np.array([
@@ -335,6 +366,9 @@ class PCVMRoverObsBuilder(RealRoverObsBuilder):
             obs[-7:] = np.concatenate([sensors, motion]).astype(np.float32)
             result = {'obs': obs, 'pcvm_error': repr(exc), 'pcvm_novelty': 0.0, 'pcvm_surprise': 0.0}
         backend = {k: v for k, v in result.items() if k != 'obs'}
+        backend['pcvm_pose'] = [self.pose_x, self.pose_y, self.pose_yaw]
+        backend['pcvm_travel_m'] = self.travel_m
+        backend['pcvm_executed_motion'] = executed_motion
         backend['predictive_novelty'] = float(backend.get('pcvm_novelty') or 0.0)
         backend['predictive_surprise'] = float(backend.get('pcvm_surprise') or 0.0)
         return result['obs'].astype(np.float32), distances, backend
@@ -436,11 +470,12 @@ def main():
     try:
         print(json.dumps({'gyro_z_bias': safety.calibrate_gyro()}, sort_keys=True), flush=True)
         last_executed_action = None
+        last_execution_feedback = None
         for step in range(args.steps):
             if args.mode == 'mine':
                 obs, distances, backend_info = obs_builder.build_predictive(last_executed_action)
             elif args.mode in ('pcvm', 'pcvm-m'):
-                obs, distances, backend_info = obs_builder.build_pcvm(last_executed_action)
+                obs, distances, backend_info = obs_builder.build_pcvm(last_executed_action, last_execution_feedback)
             else:
                 obs, distances = obs_builder.build(obs_dim)
                 backend_info = {}
@@ -459,6 +494,9 @@ def main():
                 if not args.dry_run:
                     report = safety.turn_until_clear(turn_dir, speed_pct=args.turn_pwm)
                     print(json.dumps({'recovery': report}, sort_keys=True), flush=True)
+                    last_execution_feedback = {'recovery': {'recovery': report}}
+                else:
+                    last_execution_feedback = None
                 time.sleep(args.sleep)
                 continue
             obs_builder.last_action = np.asarray(action, dtype=np.float32).copy()
@@ -467,12 +505,16 @@ def main():
                 'step': step,
                 'distances': distances,
                 'action': [float(action[0]), float(action[1])],
+                'action_contract': '[theta_norm, distance_norm]',
                 'backend': backend_info,
                 'target': target,
             }, sort_keys=True), flush=True)
             if not args.dry_run:
                 report = executor.execute_local_target(target['x_cm'], target['y_cm'])
                 print(json.dumps({'execution': report}, sort_keys=True), flush=True)
+                last_execution_feedback = {'execution': report}
+            else:
+                last_execution_feedback = None
             last_executed_action = np.asarray(action, dtype=np.float32).copy()
             time.sleep(args.sleep)
     finally:

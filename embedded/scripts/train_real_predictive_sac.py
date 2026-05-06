@@ -16,6 +16,7 @@ Stable-Baselines SAC zip that can later be run with:
 """
 
 import argparse
+from collections import deque
 import json
 import time
 
@@ -75,6 +76,8 @@ class RealPredictiveSACEnv(gym.Env):
         self.last_action = None
         self.last_backend = {}
         self.last_distances = {}
+        self.path_points = deque(maxlen=args.path_memory_size)
+        self.last_reward_terms = {}
         self.safety.calibrate_gyro()
 
     def close(self):
@@ -85,14 +88,17 @@ class RealPredictiveSACEnv(gym.Env):
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         self.last_action = None
+        self.path_points.clear()
+        self.last_reward_terms = {}
         obs, distances, backend = self._build_obs(None)
+        self._update_path_memory(backend)
         self.last_backend = backend
         self.last_distances = distances
         return obs, {'distances': distances, 'backend': backend}
 
-    def _build_obs(self, action):
+    def _build_obs(self, action, execution_feedback=None):
         if self.args.backend in ('pcvm', 'pcvm-m'):
-            return self.obs_builder.build_pcvm(action)
+            return self.obs_builder.build_pcvm(action, execution_feedback)
         return self.obs_builder.build_predictive(action)
 
     def _recover_if_blocked(self, distances):
@@ -108,13 +114,49 @@ class RealPredictiveSACEnv(gym.Env):
             'recovery': report,
         }
 
+    def _path_reward(self, backend):
+        pose = backend.get('pcvm_pose')
+        if not pose or len(pose) < 2:
+            return 0.0, {'path_min_dist_m': None, 'path_revisit_penalty': 0.0, 'path_away_bonus': 0.0}
+        x = float(pose[0])
+        y = float(pose[1])
+        if not self.path_points:
+            return 0.0, {'path_min_dist_m': None, 'path_revisit_penalty': 0.0, 'path_away_bonus': 0.0}
+
+        dists = [float(np.hypot(x - px, y - py)) for px, py in self.path_points]
+        min_dist = min(dists)
+        near = max(0.0, 1.0 - min_dist / max(1e-6, self.args.path_near_radius_m))
+        away = min(1.0, min_dist / max(1e-6, self.args.path_far_radius_m))
+        penalty = self.args.path_revisit_penalty * near
+        bonus = self.args.path_away_bonus * away
+        return bonus - penalty, {
+            'path_min_dist_m': min_dist,
+            'path_revisit_penalty': penalty,
+            'path_away_bonus': bonus,
+        }
+
+    def _update_path_memory(self, backend):
+        pose = backend.get('pcvm_pose')
+        if pose and len(pose) >= 2:
+            self.path_points.append((float(pose[0]), float(pose[1])))
+
     def _reward(self, execution, backend, recovery):
         reward = -0.03
-        reward += self.args.novelty_weight * float(backend.get('predictive_novelty') or 0.0)
-        reward += self.args.surprise_weight * float(backend.get('predictive_surprise') or 0.0)
+        novelty_reward = self.args.novelty_weight * float(backend.get('predictive_novelty') or 0.0)
+        surprise_reward = self.args.surprise_weight * float(backend.get('predictive_surprise') or 0.0)
+        path_reward, path_terms = self._path_reward(backend)
+        reward += novelty_reward + surprise_reward + path_reward
+        self.last_reward_terms = {
+            'base': -0.03,
+            'novelty_reward': novelty_reward,
+            'surprise_reward': surprise_reward,
+            'path_reward': path_reward,
+            **path_terms,
+        }
 
         if recovery is not None:
             reward -= self.args.recovery_penalty
+            self.last_reward_terms['recovery_penalty'] = self.args.recovery_penalty
 
         if execution is None:
             return reward
@@ -122,15 +164,21 @@ class RealPredictiveSACEnv(gym.Env):
         drive = execution.get('drive') or {}
         clipped = float(execution.get('clipped_distance_cm') or 0.0)
         requested = max(1.0, float(execution.get('requested_distance_cm') or 1.0))
-        reward += self.args.distance_weight * min(1.0, clipped / requested)
+        distance_reward = self.args.distance_weight * min(1.0, clipped / requested)
+        reward += distance_reward
+        self.last_reward_terms['distance_reward'] = distance_reward
         if drive.get('ok'):
             reward += self.args.success_bonus
+            self.last_reward_terms['success_bonus'] = self.args.success_bonus
         else:
             reward -= self.args.stop_penalty
+            self.last_reward_terms['stop_penalty'] = self.args.stop_penalty
         if 'front_safety_stop' in str(drive.get('reason')):
             reward -= self.args.front_stop_penalty
+            self.last_reward_terms['front_stop_penalty'] = self.args.front_stop_penalty
         if execution.get('reason') == 'distance_clipped_to_zero':
             reward -= self.args.zero_distance_penalty
+            self.last_reward_terms['zero_distance_penalty'] = self.args.zero_distance_penalty
         return float(reward)
 
     def step(self, action):
@@ -144,17 +192,20 @@ class RealPredictiveSACEnv(gym.Env):
         if recovery is None:
             execution = self.executor.execute_local_target(target['x_cm'], target['y_cm'])
 
-        obs, distances, backend = self._build_obs(action)
+        obs, distances, backend = self._build_obs(action, {'execution': execution, 'recovery': recovery})
         reward = self._reward(execution, backend, recovery)
+        self._update_path_memory(backend)
         info = {
             'step': self.step_count,
             'action': [float(action[0]), float(action[1])],
+            'action_contract': '[theta_norm, distance_norm]',
             'target': target,
             'distances': distances,
             'backend': backend,
             'execution': execution,
             'recovery': recovery,
             'reward': reward,
+            'reward_terms': self.last_reward_terms,
         }
         print(json.dumps(info, sort_keys=True), flush=True)
         self.last_action = action.copy()
@@ -190,6 +241,11 @@ def parse_args():
     parser.add_argument('--front-stop-penalty', type=float, default=0.25)
     parser.add_argument('--recovery-penalty', type=float, default=0.35)
     parser.add_argument('--zero-distance-penalty', type=float, default=0.25)
+    parser.add_argument('--path-revisit-penalty', type=float, default=0.45)
+    parser.add_argument('--path-away-bonus', type=float, default=0.25)
+    parser.add_argument('--path-near-radius-m', type=float, default=0.45)
+    parser.add_argument('--path-far-radius-m', type=float, default=1.5)
+    parser.add_argument('--path-memory-size', type=int, default=400)
     return parser.parse_args()
 
 
