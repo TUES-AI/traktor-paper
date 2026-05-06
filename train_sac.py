@@ -34,6 +34,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import gymnasium as gym
 from gymnasium import spaces
+from collections import deque
 
 from tqdm import tqdm
 from stable_baselines3 import SAC
@@ -109,6 +110,7 @@ _MEMORY_SIZE       = 1000
 _MEMORY_KNOWN_DIST = 0.08
 _MEMORY_UPDATE_RATE = 0.05
 _MEMORY_NORM_DIST  = 0.18
+_MEMORY_SMOOTH_WINDOW = 5
 _RND_WEIGHT        = 0.65
 _MEMORY_WEIGHT     = 0.35
 
@@ -188,6 +190,21 @@ class _ClusterMemory:
         return len(self._centroids) - 1, True
 
 
+class _TemporalEmbeddingSmoother:
+    """Mean-pool recent embeddings before visual-place clustering."""
+    def __init__(self, window=_MEMORY_SMOOTH_WINDOW):
+        self._buf = deque(maxlen=window)
+
+    def reset(self):
+        self._buf.clear()
+
+    def push(self, x):
+        z = torch.nn.functional.normalize(x.detach().squeeze(0), dim=0)
+        self._buf.append(z.cpu())
+        smooth = torch.stack(list(self._buf)).mean(dim=0)
+        return torch.nn.functional.normalize(smooth, dim=0)
+
+
 class VMMObsWrapper(gym.Wrapper):
     """
     RND-based novelty wrapper — no coverage-grid oracle.
@@ -218,6 +235,7 @@ class VMMObsWrapper(gym.Wrapper):
         self._predictor = _RNDPredictor().to(DEVICE)
         self._opt       = torch.optim.Adam(self._predictor.parameters(), lr=_RND_LR)
         self._memory    = _ClusterMemory()
+        self._smoother  = _TemporalEmbeddingSmoother()
         self._rnd_mean     = 0.0
         self._rnd_m2       = 0.0
         self._rnd_n        = 0
@@ -236,6 +254,7 @@ class VMMObsWrapper(gym.Wrapper):
         self._diag_fov         = []   # [fov_L, fov_C, fov_R] every step
         self._diag_memory_size = []   # bank size every step
         self._diag_new_clusters = []  # cluster creations every step
+        self._diag_smooth_window = []  # active smoothing window length
 
         # Fixed visual probes: synthetic egocentric views with distinct texture
         # phases. They are diagnostics only; policy/RND training never sees room ids.
@@ -317,12 +336,13 @@ class VMMObsWrapper(gym.Wrapper):
         raw = self._rnd_error(x, update=True)
         rnd_norm = self._normalise_rnd(raw, update_stats=True)
 
-        mem_dist, z, cluster_idx = self._memory.query(x)
+        z_smooth = self._smoother.push(x)
+        mem_dist, _, cluster_idx = self._memory.query(z_smooth.unsqueeze(0).to(x.device))
         mem_norm = float(np.clip(mem_dist / _MEMORY_NORM_DIST, 0.0, 1.0))
         new_cluster = False
         if self._global_steps >= _RND_WARMUP:
             cluster_idx, new_cluster = self._memory.update(
-                z, mem_dist, cluster_idx, self._global_steps)
+                z_smooth, mem_dist, cluster_idx, self._global_steps)
 
         combined = float(np.clip(_RND_WEIGHT * rnd_norm + _MEMORY_WEIGHT * mem_norm, 0.0, 1.0))
 
@@ -332,6 +352,7 @@ class VMMObsWrapper(gym.Wrapper):
         self._diag_mem.append(mem_norm)
         self._diag_memory_size.append(self._memory.size)
         self._diag_new_clusters.append(1.0 if new_cluster else 0.0)
+        self._diag_smooth_window.append(len(self._smoother._buf))
         self._rnd_novelty = rnd_norm
         self._mem_novelty = mem_norm
         self._cluster_id = cluster_idx
@@ -378,6 +399,7 @@ class VMMObsWrapper(gym.Wrapper):
         fovs      = np.array(self._diag_fov)         if self._diag_fov        else np.zeros((1, 3))
         mem_sizes = np.array(self._diag_memory_size) if self._diag_memory_size else np.array([self._memory.size])
         new_clusters = np.array(self._diag_new_clusters) if self._diag_new_clusters else np.array([0.0])
+        smooth_windows = np.array(self._diag_smooth_window) if self._diag_smooth_window else np.array([0.0])
 
         # Probe: evaluate RND on each fixed state — no gradient, no predictor update
         with torch.no_grad():
@@ -405,6 +427,7 @@ class VMMObsWrapper(gym.Wrapper):
             "memory_size_mean":  float(mem_sizes.mean()),
             "new_clusters":      int(new_clusters.sum()),
             "new_cluster_rate":  float(new_clusters.mean()),
+            "smooth_window_mean": float(smooth_windows.mean()),
         }
         # Reset accumulators
         self._diag_raw_losses.clear()
@@ -414,11 +437,13 @@ class VMMObsWrapper(gym.Wrapper):
         self._diag_fov.clear()
         self._diag_memory_size.clear()
         self._diag_new_clusters.clear()
+        self._diag_smooth_window.clear()
         return stats
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
         self._novelty = 0.0
+        self._smoother.reset()
         return self._augment(obs, self._novelty), info
 
     def step(self, action):
@@ -698,7 +723,7 @@ def _save_rnd_csv(all_rnd_logs, out_dir):
             "mem_novelty_mean", "mem_novelty_std", "fov_L_mean",
             "fov_C_mean", "fov_R_mean", "rnd_running_mean",
             "memory_size", "memory_size_mean", "new_clusters",
-            "new_cluster_rate",
+            "new_cluster_rate", "smooth_window_mean",
         ]
         probe_keys = [f"probe_error_{i}" for i in range(len(log[0].get("probe_errors", [])))]
         with open(path, "w", newline="") as f:

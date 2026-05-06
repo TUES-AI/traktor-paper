@@ -30,7 +30,9 @@ embedding with the MobileNetV3 camera embedding below.
 The VMM novelty reward is `0.65 * RND + 0.35 * cluster_memory_distance`.
 RND gives smooth learned novelty; cluster memory makes repeated perceptions
 explicitly familiar by updating nearest visual-place centroids instead of
-storing unbounded raw frame embeddings.
+storing unbounded raw frame embeddings. Cluster lookup uses a 5-frame temporal
+mean embedding so blur and small viewpoint jitter are less likely to create
+spurious new places.
 
 Benchmark outputs now include `coverage_per_collision`,
 `collisions_per_1k_steps`, `coverage_per_1k_steps`, reward-rate metrics,

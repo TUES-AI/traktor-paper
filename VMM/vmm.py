@@ -23,6 +23,7 @@ import torch.nn.functional as F
 import torchvision.models as models
 import torchvision.transforms as T
 import numpy as np
+from collections import deque
 
 # ── Config ────────────────────────────────────────────────────────────────────
 EMBED_DIM       = 128
@@ -32,6 +33,7 @@ MEMORY_KNOWN_DIST = 0.08    # below this, update an existing visual-place cluste
 MEMORY_UPDATE_RATE = 0.05   # centroid adaptation rate for familiar views
 NOVEL_DIST_THR  = 0.12      # cosine distance → "novel"  (pure memory decision)
 MEMORY_NORM_DIST = 0.18     # distance that saturates memory novelty at 1.0
+MEMORY_SMOOTH_WINDOW = 5
 RND_WEIGHT      = 0.65
 MEMORY_WEIGHT   = 0.35
 RND_LR          = 3e-4      # train aggressively — novelty flag controls when, not LR
@@ -150,6 +152,20 @@ class MemoryBank:
         return len(self.bank) - 1, True
 
 
+class TemporalEmbeddingSmoother:
+    def __init__(self, window=MEMORY_SMOOTH_WINDOW):
+        self.buf = deque(maxlen=window)
+
+    def reset(self):
+        self.buf.clear()
+
+    def push(self, z):
+        z = F.normalize(z.detach().squeeze(0), dim=0)
+        self.buf.append(z)
+        smooth = torch.stack(list(self.buf)).mean(dim=0)
+        return F.normalize(smooth, dim=0).unsqueeze(0)
+
+
 # ── VMM ───────────────────────────────────────────────────────────────────────
 class VMM:
     def __init__(self):
@@ -158,6 +174,7 @@ class VMM:
         self.predictor = PredictorNet().to(DEVICE)
         self.opt       = torch.optim.Adam(self.predictor.parameters(), lr=RND_LR)
         self.memory    = MemoryBank()
+        self.smoother  = TemporalEmbeddingSmoother()
         self.rnd_norm  = RunningNorm()
         self.nov_norm  = RunningNorm()
         self.step      = 0
@@ -172,10 +189,11 @@ class VMM:
     def observe(self, frame_bgr):
         z = self._embed(frame_bgr)
 
-        # ── Memory signal (visual-place cluster distance) ─────────
-        mem_dist, cluster_idx = self.memory.query(z)
+        # ── Memory signal (smoothed visual-place cluster distance) ─────────
+        z_smooth = self.smoother.push(z)
+        mem_dist, cluster_idx = self.memory.query(z_smooth)
         if self.step >= WARMUP_STEPS:
-            cluster_idx, created_cluster = self.memory.update(z, mem_dist, cluster_idx, self.step)
+            cluster_idx, created_cluster = self.memory.update(z_smooth, mem_dist, cluster_idx, self.step)
         else:
             created_cluster = False
 
@@ -207,6 +225,7 @@ class VMM:
             "rnd_norm":  rnd_norm,
             "cluster_id": cluster_idx,
             "new_cluster": created_cluster,
+            "smooth_window": len(self.smoother.buf),
             "is_novel":  is_novel,
             "bank_size": len(self.memory.bank),
             "step":      self.step,
@@ -242,6 +261,7 @@ def draw_overlay(frame, r, history):
         f"rnd ratio : {r['rnd_norm']:.3f}",
         f"mem norm  : {r.get('mem_norm', 0.0):.3f}",
         f"combined  : {r['novelty']:.3f}",
+        f"smooth    : {r.get('smooth_window', 0)} frames",
     ]
     for i, s in enumerate(stats):
         cv2.putText(vis, s, (20, 120 + i*22),
