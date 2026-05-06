@@ -5,6 +5,10 @@ SAC-NoVMM : obs = [left, right, front] plus movement/safety reward only
 SAC-VMM   : obs = ultrasonic + IMU + simulated egocentric visual RND features
             reward += rnd_novelty * VMM_NOVELTY_SCALE each step
 
+Action    : [theta_norm, distance_norm]
+            theta_norm maps to a rover-local heading in [-75deg, +75deg]
+            distance_norm maps to a turn-then-drive local target distance.
+
 VMM novelty is RND (Random Network Distillation) on a 2D egocentric "camera"
 embedding: a forward fan of ray depths plus deterministic endpoint texture.
 This is a simulator stand-in for the real VMM path, where MobileNetV3 embeds
@@ -13,9 +17,9 @@ camera frames and RND runs on those visual embeddings.
 Multi-seed: each method runs on N_SEEDS independent obstacle layouts;
 coverage curves are averaged and plotted with mean +/- std shaded bands.
 
-Safety layer: simulator collision physics stays active; the SAC factories keep
-the reflex bumper off so the replay buffer does not silently store unclamped
-actions as if they were executed.
+Safety layer: SAC outputs a 2D rover-local target intent, then the simulator
+executes it through the same turn-then-drive deterministic safety semantics as
+the hardware stack.
 
 Training is continuous — single map, coverage is logged as hidden evaluation,
 not used as a reward in the SAC training factories.
@@ -82,12 +86,10 @@ def _benchmark_metrics(inner):
 # -- Safety penalty wrapper -----------------------------------------------------
 
 class SafetyPenaltyWrapper(gym.Wrapper):
-    """Bumper is OFF during training — SAC learns from its own actions.
-    Collision physics (slide code) prevents wall penetration.
-    R_COLLISION penalty in the env already discourages crashing."""
+    """Keep the simulated deterministic safety layer active during training."""
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        self.env.use_bumper = False   # do not intercept SAC actions
+        self.env.use_bumper = True
         return obs, info
 
     def step(self, action):

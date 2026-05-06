@@ -107,12 +107,12 @@ class PredictiveVMMWrapper(gym.Wrapper):
     """
 
     CANDIDATES = np.array([
-        [0.0, 0.8],   # forward
-        [-0.7, 0.55], # arc/right-ish
-        [0.7, 0.55],  # arc/left-ish
-        [-1.0, 0.25], # spin right
-        [1.0, 0.25],  # spin left
-        [0.0, -0.45], # reverse
+        [0.0, 0.25],   # forward medium
+        [-0.7, 0.0],   # right-front target
+        [0.7, 0.0],    # left-front target
+        [-1.0, -1.0],  # pure right turn
+        [1.0, -1.0],   # pure left turn
+        [0.0, -0.6],   # short forward / near no-op
     ], dtype=np.float32)
 
     def __init__(self, env: gym.Env, novelty_scale: float = 0.9, surprise_scale: float = 0.25, warmup: int = 200):

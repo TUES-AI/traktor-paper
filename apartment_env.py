@@ -46,7 +46,7 @@ APT_CELL_H = APT_H / APT_ROWS
 from rover_coverage_env import (
     MAX_WHEEL_SPEED, SENSOR_MAX, SENSOR_MIN, SENSOR_NOISE_STD,
     SENSOR_ANGLES, WHEEL_CMDS,
-    AGENT_RADIUS, ROVER_LENGTH, ROVER_WIDTH,
+    AGENT_RADIUS, ROVER_LENGTH, ROVER_WIDTH, AXLE_LENGTH,
     FRONT_SAFETY_DIST, SIDE_SAFETY_DIST,
     ACT_BACKWARD, ACT_SPIN_LEFT, ACT_SPIN_RIGHT,
     INERTIA_ALPHA,
@@ -103,6 +103,11 @@ WALL_T           = 0.15   # wall thickness (m)
 DOOR_W           = 2.00   # doorway width (m)
 MAX_HORIZON_STEPS = 30    # horizon=1.0 → 30 physics sub-steps = 1.5 s
 YAW_RATE_MAX      = 6.0   # rad/s — max yaw rate at full differential spin
+MAX_TARGET_THETA_DEG = 75.0
+MAX_TARGET_DISTANCE_M = 1.20
+LOCAL_TARGET_TURN_SPEED = 0.55
+LOCAL_TARGET_DRIVE_SPEED = 0.75
+LOCAL_TARGET_MIN_DRIVE_M = 0.10
 
 # ── Apartment wall layout ─────────────────────────────────────────────────────
 #
@@ -265,11 +270,11 @@ class ApartmentContinuousEnv(gym.Env):
         self.obstacles: list = []
 
         # Gym spaces
-        # [curvature, horizon, speed]  — matches PROJECT.md guide format
-        # horizon ∈ [0,1] maps to 1–MAX_HORIZON_STEPS physics sub-steps
+        # SAC action = [theta_norm, distance_norm]. Legacy 3D curvature actions
+        # are still accepted by step() for old deterministic helpers.
         self.action_space = spaces.Box(
-            low =np.array([-1.0, 0.0, 0.0], dtype=np.float32),
-            high=np.array([ 1.0, 1.0, 1.0], dtype=np.float32),
+            low =np.array([-1.0, -1.0], dtype=np.float32),
+            high=np.array([ 1.0,  1.0], dtype=np.float32),
         )
         self.observation_space = spaces.Box(
             low=0.0, high=1.0, shape=(3,), dtype=np.float32
@@ -387,6 +392,11 @@ class ApartmentContinuousEnv(gym.Env):
         return self._get_obs(), {}
 
     def step(self, action):
+        if len(action) <= 2:
+            return self._step_local_target(action)
+        return self._step_legacy_curvature(action)
+
+    def _step_legacy_curvature(self, action):
         c = float(np.clip(action[0], -1.0, 1.0))
         h = float(np.clip(action[1],  0.0, 1.0)) if len(action) > 2 else 0.0
         s = float(np.clip(action[2] if len(action) > 2 else action[1], 0.0, 1.0))
@@ -426,6 +436,82 @@ class ApartmentContinuousEnv(gym.Env):
         info["bumper_fired"]  = cum_bumper
         info["bumper_total"]  = self._bumper_triggers
         return obs, cum_reward, term, trunc, info
+
+    def _step_local_target(self, action):
+        theta_norm = float(np.clip(action[0], -1.0, 1.0))
+        dist_norm = float(np.clip(action[1], -1.0, 1.0))
+        theta_target = np.radians(theta_norm * MAX_TARGET_THETA_DEG)
+        distance_m = ((dist_norm + 1.0) * 0.5) * MAX_TARGET_DISTANCE_M
+
+        theta_before = self.theta
+        cum_reward = 0.0
+        cum_bumper = False
+        term = trunc = False
+        info = {}
+
+        omega = (2.0 * MAX_WHEEL_SPEED * LOCAL_TARGET_TURN_SPEED) / AXLE_LENGTH
+        n_turn = int(np.ceil(abs(theta_target) / max(omega * 0.05, 1e-6)))
+        turn_sign = 1.0 if theta_target >= 0.0 else -1.0
+        if n_turn > 0:
+            vl_turn = -turn_sign * LOCAL_TARGET_TURN_SPEED * MAX_WHEEL_SPEED
+            vr_turn = turn_sign * LOCAL_TARGET_TURN_SPEED * MAX_WHEEL_SPEED
+            obs, reward, term, trunc, info, bumped = self._run_substeps(vl_turn, vr_turn, n_turn)
+            cum_reward += reward
+            cum_bumper = cum_bumper or bumped
+
+        if not (term or trunc) and distance_m >= LOCAL_TARGET_MIN_DRIVE_M:
+            n_drive = int(np.ceil(distance_m / max(LOCAL_TARGET_DRIVE_SPEED * MAX_WHEEL_SPEED * 0.05, 1e-6)))
+            v = LOCAL_TARGET_DRIVE_SPEED * MAX_WHEEL_SPEED
+            obs, reward, term, trunc, info, bumped = self._run_substeps(v, v, n_drive)
+            cum_reward += reward
+            cum_bumper = cum_bumper or bumped
+        elif not info:
+            obs = self._get_obs()
+            info = {
+                "bumper_fired": False,
+                "collisions": self._collisions,
+                "bumper_total": self._bumper_triggers,
+                "coverage": self._coverage(),
+                "steps": self.step_count,
+            }
+
+        delta_theta = (self.theta - theta_before + np.pi) % (2 * np.pi) - np.pi
+        total_substeps = max(1, n_turn + (0 if distance_m < LOCAL_TARGET_MIN_DRIVE_M else int(np.ceil(distance_m / max(LOCAL_TARGET_DRIVE_SPEED * MAX_WHEEL_SPEED * 0.05, 1e-6)))))
+        self.yaw_rate = float(np.clip(delta_theta / (total_substeps * 0.05) / YAW_RATE_MAX, -1.0, 1.0))
+
+        info["bumper_fired"] = cum_bumper
+        info["bumper_total"] = self._bumper_triggers
+        info["local_target"] = {
+            "theta_deg": float(np.degrees(theta_target)),
+            "distance_m": float(distance_m),
+        }
+        return obs, cum_reward, term, trunc, info
+
+    def _run_substeps(self, vl_cmd, vr_cmd, n_sub):
+        cum_reward = 0.0
+        cum_bumper = False
+        info = {}
+        term = trunc = False
+        for _ in range(max(1, n_sub)):
+            vl, vr = vl_cmd, vr_cmd
+            bumper_fired = False
+            if self.use_bumper:
+                override = self._safety_override()
+                if override is not None:
+                    _act_map = [
+                        (vl_ * MAX_WHEEL_SPEED, vr_ * MAX_WHEEL_SPEED)
+                        for vl_ in WHEEL_CMDS for vr_ in WHEEL_CMDS
+                    ]
+                    vl, vr = _act_map[override]
+                    bumper_fired = True
+                    cum_bumper = True
+            obs, reward, term, trunc, info = self._physics_and_reward(vl, vr, bumper_fired)
+            cum_reward += reward
+            if term or trunc:
+                break
+        if cum_bumper:
+            self._bumper_triggers += 1
+        return obs, cum_reward, term, trunc, info, cum_bumper
 
     def _physics_and_reward(self, vl_cmd, vr_cmd, bumper_fired):
         # Inertia

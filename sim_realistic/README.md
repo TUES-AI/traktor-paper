@@ -4,6 +4,11 @@ Clean simulator for testing exploration methods without leaking information the 
 
 ## Contract
 
+Agent actions are 2D local target intents:
+
+- `theta_norm`: `[-1, 1]` mapped to `[-75deg, +75deg]`
+- `distance_norm`: `[-1, 1]` mapped to `[0m, 1.2m]`
+
 Agent observations include only:
 
 - egocentric ray-camera image flattened to `16 x 32`

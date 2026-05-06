@@ -22,6 +22,11 @@ CAM_FOV = math.radians(86.0)
 FRONT_STOP_DIST = 0.38
 FRONT_TURN_DIST = 0.55
 SIDE_CLEAR_DIST = 0.25
+MAX_TARGET_THETA_DEG = 75.0
+MAX_TARGET_DISTANCE_M = 1.20
+TARGET_TURN_SPEED = 0.55
+TARGET_DRIVE_SPEED = 0.75
+TARGET_MIN_DRIVE_M = 0.10
 
 
 @dataclass(frozen=True)
@@ -70,6 +75,8 @@ class RealisticRoverEnv(gym.Env):
         self.use_safety = use_safety
         self._rng = np.random.default_rng(seed)
         self._seed = seed
+        # SAC action = [theta_norm, distance_norm]. The environment executes it
+        # as deterministic turn-then-drive local target intent.
         self.action_space = spaces.Box(
             low=np.array([-1.0, -1.0], dtype=np.float32),
             high=np.array([1.0, 1.0], dtype=np.float32),
@@ -265,9 +272,9 @@ class RealisticRoverEnv(gym.Env):
         executed = np.array([turn, speed], dtype=np.float32)
         return turn, speed, clamped, proposed, executed, reason
 
-    def step(self, action):
-        raw_turn = float(np.clip(action[0], -1, 1))
-        raw_speed = float(np.clip(action[1], -1, 1))
+    def _step_turn_speed(self, turn: float, speed: float):
+        raw_turn = float(np.clip(turn, -1, 1))
+        raw_speed = float(np.clip(speed, -1, 1))
         turn, speed, safety_clamped, proposed_action, executed_action, safety_reason = self._safety_filter(raw_turn, raw_speed)
         if safety_clamped:
             self.safety_clamps += 1
@@ -316,6 +323,40 @@ class RealisticRoverEnv(gym.Env):
             "executed_action": executed_action,
         })
         return self._obs(), float(reward), terminated, truncated, info
+
+    def step(self, action):
+        theta_norm = float(np.clip(action[0], -1, 1))
+        dist_norm = float(np.clip(action[1], -1, 1))
+        theta_target = math.radians(theta_norm * MAX_TARGET_THETA_DEG)
+        distance_m = ((dist_norm + 1.0) * 0.5) * MAX_TARGET_DISTANCE_M
+        omega = (2.0 * MAX_SPEED * TARGET_TURN_SPEED) / AXLE
+        n_turn = int(math.ceil(abs(theta_target) / max(omega * DT, 1e-6)))
+        turn_sign = 1.0 if theta_target >= 0.0 else -1.0
+        n_drive = 0 if distance_m < TARGET_MIN_DRIVE_M else int(math.ceil(distance_m / max(TARGET_DRIVE_SPEED * MAX_SPEED * DT, 1e-6)))
+
+        total_reward = 0.0
+        term = trunc = False
+        info = {}
+        obs = None
+        for _ in range(n_turn):
+            obs, reward, term, trunc, info = self._step_turn_speed(turn_sign, 0.0)
+            total_reward += reward
+            if term or trunc:
+                break
+        if not (term or trunc):
+            for _ in range(n_drive):
+                obs, reward, term, trunc, info = self._step_turn_speed(0.0, TARGET_DRIVE_SPEED)
+                total_reward += reward
+                if term or trunc:
+                    break
+        if obs is None:
+            obs = self._obs()
+            info = self._info(0.0, False)
+        info["local_target"] = {
+            "theta_deg": float(math.degrees(theta_target)),
+            "distance_m": float(distance_m),
+        }
+        return obs, float(total_reward), term, trunc, info
 
     def _info(self, dist: float, collided: bool):
         return {
