@@ -102,12 +102,16 @@ class RealPredictiveSACEnv(gym.Env):
         return self.obs_builder.build_predictive(action)
 
     def _recover_if_blocked(self, distances):
+        reverse = self.safety.reverse_if_too_close(self.args.drive_pwm, distances)
+        if reverse is not None:
+            distances = self.safety.read_distances()
         safe, front, threshold = self.safety.is_front_safe(self.args.drive_pwm, distances)
         if safe:
-            return None
+            return {'reverse': reverse, 'continue_after_reverse': True} if reverse is not None else None
         turn_dir = self.safety.freer_side(distances)
         report = self.safety.turn_until_clear(turn_dir, speed_pct=self.args.turn_pwm)
         return {
+            'reverse': reverse,
             'front_cm': front,
             'threshold_cm': threshold,
             'turn_dir': turn_dir,
@@ -189,7 +193,7 @@ class RealPredictiveSACEnv(gym.Env):
         recovery = self._recover_if_blocked(self.last_distances)
         target = action_to_target(action, self.args.max_theta_deg, self.args.max_distance_cm, self.args.min_drive_cm)
         execution = None
-        if recovery is None:
+        if recovery is None or recovery.get('continue_after_reverse'):
             execution = self.executor.execute_local_target(target['x_cm'], target['y_cm'])
 
         obs, distances, backend = self._build_obs(action, {'execution': execution, 'recovery': recovery})

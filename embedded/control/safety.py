@@ -12,6 +12,9 @@ class SafetyConfig:
     side_turn_clear_cm: float = 20.0
     front_clear_to_resume_cm: float = 30.0
     wall_seen_cm: float = 45.0
+    close_front_recovery_ratio: float = 0.8
+    close_front_reverse_cm: float = 15.0
+    reverse_recovery_cm_per_second: float = 20.0
     reverse_recovery_seconds: float = 0.75
     reverse_recovery_speed: float = 45.0
     recovery_turn_target_deg: float = 70.0
@@ -94,10 +97,35 @@ class SafetyController:
         self.rover.stop_motors()
         return {'executed': True, 'reason': 'forward', 'front_cm': front, 'threshold_cm': threshold}
 
-    def reverse_recovery(self):
+    def reverse_recovery(self, distance_cm=None):
+        distance_cm = self.config.close_front_reverse_cm if distance_cm is None else float(distance_cm)
+        seconds = max(0.0, distance_cm / max(1e-6, self.config.reverse_recovery_cm_per_second))
         self.rover.drive('backward', 'backward', left_speed=self.config.reverse_recovery_speed, right_speed=self.config.reverse_recovery_speed)
-        time.sleep(self.config.reverse_recovery_seconds)
-        self.rover.stop_motors()
+        try:
+            time.sleep(seconds)
+        finally:
+            self.rover.stop_motors()
+        return {
+            'reason': 'reverse_recovery',
+            'requested_distance_cm': distance_cm,
+            'seconds': seconds,
+            'speed_pct': self.config.reverse_recovery_speed,
+        }
+
+    def reverse_if_too_close(self, speed_pct, distances=None):
+        distances = distances or self.read_distances()
+        front = distances['front']
+        threshold = self.front_stop_cm(speed_pct)
+        trigger = threshold * self.config.close_front_recovery_ratio
+        if front is None or front >= trigger:
+            return None
+        report = self.reverse_recovery(self.config.close_front_reverse_cm)
+        return {
+            **report,
+            'front_cm': front,
+            'threshold_cm': threshold,
+            'trigger_cm': trigger,
+        }
 
     def spin_tick(self, direction, speed_pct, tick_seconds=0.08):
         if direction == 'left':

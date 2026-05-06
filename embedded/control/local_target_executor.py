@@ -65,6 +65,9 @@ class LocalTargetExecutor:
         theta = math.degrees(math.atan2(y_cm, x_cm))
         requested_distance = math.hypot(x_cm, y_cm)
         distances = self.safety.read_distances()
+        reverse_recovery = self.safety.reverse_if_too_close(self.config.drive_pwm, distances)
+        if reverse_recovery is not None:
+            distances = self.safety.read_distances()
         distance = self.clip_distance(theta, requested_distance, distances)
         report = {
             'target_local': {'x_cm': x_cm, 'y_cm': y_cm},
@@ -72,6 +75,7 @@ class LocalTargetExecutor:
             'requested_distance_cm': requested_distance,
             'clipped_distance_cm': distance,
             'start_distances': distances,
+            'reverse_recovery': reverse_recovery,
             'turn': None,
             'drive': None,
             'reason': 'started',

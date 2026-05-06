@@ -264,10 +264,15 @@ class VMMRoverEnv(gym.Env):
 
         # Safety recovery before executing
         recovery = None
+        reverse = self.safety.reverse_if_too_close(self.args.drive_pwm, self.last_distances)
+        if reverse is not None:
+            self.last_distances = self.safety.read_distances()
+            recovery = {'reverse': reverse, 'continue_after_reverse': True}
         safe, _, _ = self.safety.is_front_safe(self.args.drive_pwm, self.last_distances)
         if not safe:
             turn_dir = self.safety.freer_side(self.last_distances)
-            recovery = self.safety.turn_until_clear(turn_dir, speed_pct=self.args.turn_pwm)
+            turn_recovery = self.safety.turn_until_clear(turn_dir, speed_pct=self.args.turn_pwm)
+            recovery = {'reverse': reverse, 'recovery': turn_recovery}
             # Track the rotation that happened during recovery
             self._update_imu()
 
@@ -275,7 +280,7 @@ class VMMRoverEnv(gym.Env):
         target    = action_to_target(action, self.args.max_theta_deg,
                                      self.args.max_distance_cm, self.args.min_drive_cm)
         execution = None
-        if recovery is None:
+        if recovery is None or recovery.get('continue_after_reverse'):
             execution = self.executor.execute_local_target(target['x_cm'], target['y_cm'])
             drive = (execution or {}).get('drive') or {}
             if drive.get('ok'):

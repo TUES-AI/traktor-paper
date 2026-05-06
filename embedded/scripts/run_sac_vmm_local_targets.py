@@ -319,13 +319,16 @@ class PCVMRoverObsBuilder(RealRoverObsBuilder):
         moved = False
         stuck = False
         if recovery:
+            reverse = recovery.get('reverse') or {}
+            distance_cm -= max(0.0, float(reverse.get('requested_distance_cm') or 0.0))
             report = recovery.get('recovery') or {}
             yaw_deg += float(report.get('yaw_deg') or 0.0)
         if execution:
             turn = execution.get('turn') or {}
             yaw_deg += float(turn.get('yaw_deg') or 0.0)
-            distance_cm = max(0.0, float(execution.get('clipped_distance_cm') or 0.0))
-            moved = distance_cm > 1.0
+            executed_distance_cm = max(0.0, float(execution.get('clipped_distance_cm') or 0.0))
+            distance_cm += executed_distance_cm
+            moved = executed_distance_cm > 1.0
             reason = str(execution.get('reason') or '') + ' ' + str((execution.get('drive') or {}).get('reason') or '')
             stuck = (not moved) or ('front_safety_stop' in reason) or ('distance_clipped_to_zero' in reason)
         self.pose_yaw += math.radians(yaw_deg)
@@ -480,6 +483,10 @@ def main():
                 obs, distances = obs_builder.build(obs_dim)
                 backend_info = {}
             action, _ = model.predict(obs, deterministic=args.deterministic)
+            reverse = None if args.dry_run else safety.reverse_if_too_close(args.drive_pwm, distances)
+            if reverse is not None:
+                print(json.dumps({'recovery': {'reverse': reverse}}, sort_keys=True), flush=True)
+                distances = safety.read_distances()
             safe, front, threshold = safety.is_front_safe(args.drive_pwm, distances)
             if not safe:
                 turn_dir = safety.freer_side(distances)
@@ -490,15 +497,18 @@ def main():
                     'front_cm': front,
                     'threshold_cm': threshold,
                     'turn_dir': turn_dir,
+                    'reverse': reverse,
                 }, sort_keys=True), flush=True)
                 if not args.dry_run:
                     report = safety.turn_until_clear(turn_dir, speed_pct=args.turn_pwm)
                     print(json.dumps({'recovery': report}, sort_keys=True), flush=True)
-                    last_execution_feedback = {'recovery': {'recovery': report}}
+                    last_execution_feedback = {'recovery': {'reverse': reverse, 'recovery': report}}
                 else:
                     last_execution_feedback = None
                 time.sleep(args.sleep)
                 continue
+            if reverse is not None:
+                last_execution_feedback = {'recovery': {'reverse': reverse}}
             obs_builder.last_action = np.asarray(action, dtype=np.float32).copy()
             target = action_to_target(action, args.max_theta_deg, args.max_distance_cm, args.min_drive_cm)
             print(json.dumps({
@@ -512,7 +522,7 @@ def main():
             if not args.dry_run:
                 report = executor.execute_local_target(target['x_cm'], target['y_cm'])
                 print(json.dumps({'execution': report}, sort_keys=True), flush=True)
-                last_execution_feedback = {'execution': report}
+                last_execution_feedback = {'execution': report, 'recovery': {'reverse': reverse} if reverse is not None else None}
             else:
                 last_execution_feedback = None
             last_executed_action = np.asarray(action, dtype=np.float32).copy()
