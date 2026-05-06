@@ -139,7 +139,7 @@ def parse_args():
     parser.add_argument('--drive-pwm', type=float, default=90.0)
     parser.add_argument('--front-stop-cm', type=float, default=45.0)
     parser.add_argument('--front-clear-cm', type=float, default=55.0)
-    parser.add_argument('--no-echo-is-clear', action='store_true')
+    parser.add_argument('--no-echo-is-wall', action='store_true')
     parser.add_argument('--no-camera-vmm', action='store_true')
     parser.add_argument('--deterministic', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
@@ -173,7 +173,7 @@ def main():
             min_front_stop_cm=args.front_stop_cm,
             max_front_stop_cm=args.front_stop_cm,
             front_clear_to_resume_cm=args.front_clear_cm,
-            no_echo_is_clear=args.no_echo_is_clear,
+            no_echo_is_clear=not args.no_echo_is_wall,
         ),
     )
     obs_builder = RealRoverObsBuilder(rover, safety, use_camera_vmm=camera_enabled)
