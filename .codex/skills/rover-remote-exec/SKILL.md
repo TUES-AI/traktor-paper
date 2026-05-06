@@ -36,3 +36,7 @@ ssh rover 'set -e; cd /home/yasen/traktor-paper; git reset --hard; git clean -fd
 ```
 
 > Never edit files directly on the Pi — always sync from local.
+
+## Don't delete data on the remote
+
+If a script has generated some data in the remote filesystem that is git tracked, make sure you copy it outside of the repo, gitignore it or git commit it - decide based on the setup. Don't run desctructive git reset.
