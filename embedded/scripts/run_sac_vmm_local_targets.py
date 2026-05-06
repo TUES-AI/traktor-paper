@@ -33,6 +33,7 @@ YAW_RATE_MAX_DPS = 180.0
 PREDICTIVE_CAM_W = 32
 PREDICTIVE_CAM_H = 16
 PREDICTIVE_LATENT_DIM = 64
+PCVM_OBS_DIM = 143
 PREDICTIVE_CANDIDATES = np.array([
     [0.0, 0.25],
     [-0.7, 0.0],
@@ -46,6 +47,8 @@ DEFAULT_MODELS = {
     'no-vmm': 'results/SAC-NoVMM_s42.zip',
     'vmm': 'results/SAC-VMM___s42.zip',
     'mine': 'results/predictive_sac_seed42.zip',
+    'pcvm': 'results/pcvm_cnn_sac_real.zip',
+    'pcvm-m': 'results/pcvm_m_sac_real.zip',
 }
 
 
@@ -88,16 +91,23 @@ class RealRoverObsBuilder:
         self.last_yaw_rate = gyro_z
         self.yaw_deg += gyro_z * dt
 
-    def camera_novelty(self):
+    def camera_vmm_observe(self):
+        """Return full VMM result dict, or None on failure."""
         if self.vmm is None:
-            return 0.0
+            return None
         try:
             frame = self.rover.get_camera_frame()
-            result = self.vmm.observe(frame)
-            return float(result.get('novelty', result.get('rnd_norm', 0.0)))
+            result = self.vmm.observe(frame, yaw_rate_rad_s=self.last_yaw_rate)
+            return result
         except Exception as exc:
             print(json.dumps({'warning': 'camera_vmm_failed', 'error': repr(exc)}), flush=True)
+            return None
+
+    def camera_novelty(self):
+        result = self.camera_vmm_observe()
+        if result is None:
             return 0.0
+        return float(result.get('novelty', 0.0))
 
     def build(self, obs_dim):
         self.update_imu()
@@ -282,6 +292,54 @@ class PredictiveRoverObsBuilder(RealRoverObsBuilder):
         return obs, distances, {'predictive_loss': loss, 'predictive_novelty': self.novelty, 'predictive_surprise': self.surprise}
 
 
+class PCVMRoverObsBuilder(RealRoverObsBuilder):
+    def __init__(self, rover, safety, mobilenet=False):
+        super().__init__(rover, safety, use_camera_vmm=False)
+        if mobilenet:
+            from VMM.pcvm_m import PCVMMobileNet
+
+            self.model = PCVMMobileNet()
+        else:
+            from VMM.pcvm import PCVM
+
+            self.model = PCVM()
+        self.last_t = time.monotonic()
+
+    def build_pcvm(self, last_executed_action=None):
+        self.update_imu()
+        distances = self.safety.read_distances()
+        sensors = np.array([
+            norm_distance(distances['left']),
+            norm_distance(distances['right']),
+            norm_distance(distances['front']),
+        ], dtype=np.float32)
+        motion = np.array([
+            clamp(self.last_yaw_rate / YAW_RATE_MAX_DPS, -1.0, 1.0),
+            0.0,
+            float(self.last_action[0]),
+            float(self.last_action[1]),
+        ], dtype=np.float32)
+        action = np.asarray(
+            last_executed_action if last_executed_action is not None else self.last_action,
+            dtype=np.float32,
+        )
+        now = time.monotonic()
+        dt = max(1e-3, now - self.last_t)
+        self.last_t = now
+        try:
+            frame = self.rover.get_camera_frame()
+            result = self.model.observe(frame, sensors=sensors, motion=motion, action=action, dt=dt)
+        except Exception as exc:
+            print(json.dumps({'warning': 'pcvm_failed', 'error': repr(exc)}), flush=True)
+            obs = np.zeros(PCVM_OBS_DIM, dtype=np.float32)
+            obs[-7:] = np.concatenate([sensors, motion]).astype(np.float32)
+            result = {'obs': obs, 'pcvm_error': repr(exc), 'pcvm_novelty': 0.0, 'pcvm_surprise': 0.0}
+        backend = {k: v for k, v in result.items() if k != 'obs'}
+        backend['predictive_novelty'] = float(backend.get('pcvm_novelty') or 0.0)
+        backend['predictive_surprise'] = float(backend.get('pcvm_surprise') or 0.0)
+        return result['obs'].astype(np.float32), distances, backend
+
+
 def action_to_target(action, max_theta_deg, max_distance_cm, min_drive_cm):
     theta_norm = clamp(action[0], -1.0, 1.0)
     dist_norm = clamp(action[1], -1.0, 1.0)
@@ -306,8 +364,10 @@ def parse_args():
     mode.add_argument('--no-vmm', action='store_const', const='no-vmm', dest='mode')
     mode.add_argument('--vmm', action='store_const', const='vmm', dest='mode')
     mode.add_argument('--mine', action='store_const', const='mine', dest='mode')
+    mode.add_argument('--pcvm', action='store_const', const='pcvm', dest='mode')
+    mode.add_argument('--pcvm-m', action='store_const', const='pcvm-m', dest='mode')
     parser.set_defaults(mode='vmm')
-    parser.add_argument('--mode', choices=['no-vmm', 'vmm', 'mine'], help='Observation backend/method to run')
+    parser.add_argument('--mode', choices=['no-vmm', 'vmm', 'mine', 'pcvm', 'pcvm-m'], help='Observation backend/method to run')
     parser.add_argument('--model', default=None, help='Path to Stable-Baselines SAC .zip model')
     parser.add_argument('--steps', type=int, default=20)
     parser.add_argument('--sleep', type=float, default=0.25)
@@ -337,7 +397,7 @@ def main():
 
     model = SAC.load(args.model)
     obs_dim = int(np.prod(model.observation_space.shape))
-    expected_obs_dim = {'no-vmm': 3, 'vmm': 12, 'mine': 79}[args.mode]
+    expected_obs_dim = {'no-vmm': 3, 'vmm': 12, 'mine': 79, 'pcvm': PCVM_OBS_DIM, 'pcvm-m': PCVM_OBS_DIM}[args.mode]
     if obs_dim != expected_obs_dim:
         raise ValueError(f'Mode {args.mode} expects obs_dim={expected_obs_dim}, model has obs_dim={obs_dim}')
     print(json.dumps({
@@ -348,7 +408,7 @@ def main():
         'dry_run': args.dry_run,
     }, sort_keys=True), flush=True)
 
-    camera_enabled = (args.mode == 'vmm' and not args.no_camera_vmm) or args.mode == 'mine'
+    camera_enabled = (args.mode == 'vmm' and not args.no_camera_vmm) or args.mode in ('mine', 'pcvm', 'pcvm-m')
     rover = RoverAPI(camera_enabled=camera_enabled)
     imu = MPU9150(bus=1, address=0x68)
     safety = SafetyController(
@@ -363,6 +423,8 @@ def main():
     )
     if args.mode == 'mine':
         obs_builder = PredictiveRoverObsBuilder(rover, safety)
+    elif args.mode in ('pcvm', 'pcvm-m'):
+        obs_builder = PCVMRoverObsBuilder(rover, safety, mobilenet=(args.mode == 'pcvm-m'))
     else:
         obs_builder = RealRoverObsBuilder(rover, safety, use_camera_vmm=(args.mode == 'vmm' and not args.no_camera_vmm))
     executor = LocalTargetExecutor(
@@ -377,6 +439,8 @@ def main():
         for step in range(args.steps):
             if args.mode == 'mine':
                 obs, distances, backend_info = obs_builder.build_predictive(last_executed_action)
+            elif args.mode in ('pcvm', 'pcvm-m'):
+                obs, distances, backend_info = obs_builder.build_pcvm(last_executed_action)
             else:
                 obs, distances = obs_builder.build(obs_dim)
                 backend_info = {}

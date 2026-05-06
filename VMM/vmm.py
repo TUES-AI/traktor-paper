@@ -200,11 +200,18 @@ class VMM:
     def observe(self, frame_bgr, yaw_rate_rad_s=0.0):
         z = self._embed(frame_bgr)
 
-        # ── Memory signal (smoothed visual-place cluster distance) ─────────
+        # ── Memory signal ─────────────────────────────────────────────────
+        # Smoothing stabilizes familiar views, but raw-current fallback prevents
+        # a true room transition from being averaged into the previous cluster.
         z_smooth = self.smoother.push(z)
-        mem_dist, cluster_idx = self.memory.query(z_smooth)
+        smooth_dist, smooth_idx = self.memory.query(z_smooth)
+        raw_dist, raw_idx = self.memory.query(z)
+        if raw_dist > MEMORY_NORM_DIST and raw_dist > smooth_dist:
+            mem_dist, memory_z, cluster_idx, mem_source = raw_dist, z, raw_idx, "raw"
+        else:
+            mem_dist, memory_z, cluster_idx, mem_source = smooth_dist, z_smooth, smooth_idx, "smooth"
         if self.step >= WARMUP_STEPS:
-            cluster_idx, created_cluster = self.memory.update(z_smooth, mem_dist, cluster_idx, self.step)
+            cluster_idx, created_cluster = self.memory.update(memory_z, mem_dist, cluster_idx, self.step)
         else:
             created_cluster = False
 
@@ -240,6 +247,9 @@ class VMM:
             "rnd_norm":  rnd_norm,
             "cluster_id": cluster_idx,
             "new_cluster": created_cluster,
+            "mem_source": mem_source,
+            "raw_mem_dist": raw_dist,
+            "smooth_mem_dist": smooth_dist,
             "smooth_window": len(self.smoother.buf),
             "smooth_reset": self.smoother.last_reset,
             "is_novel":  is_novel,

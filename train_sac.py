@@ -380,12 +380,17 @@ class VMMObsWrapper(gym.Wrapper):
             if self._use_smoothing
             else torch.nn.functional.normalize(x.detach().squeeze(0), dim=0)
         )
-        mem_dist, _, cluster_idx = self._memory.query(z_smooth.unsqueeze(0).to(x.device))
+        smooth_dist, _, smooth_idx = self._memory.query(z_smooth.unsqueeze(0).to(x.device))
+        raw_dist, raw_z, raw_idx = self._memory.query(x)
+        if self._use_smoothing and raw_dist > _MEMORY_NORM_DIST and raw_dist > smooth_dist:
+            mem_dist, memory_z, cluster_idx = raw_dist, raw_z, raw_idx
+        else:
+            mem_dist, memory_z, cluster_idx = smooth_dist, z_smooth, smooth_idx
         mem_norm = float(np.clip(mem_dist / _MEMORY_NORM_DIST, 0.0, 1.0))
         new_cluster = False
         if self._global_steps >= _RND_WARMUP:
             cluster_idx, new_cluster = self._memory.update(
-                z_smooth, mem_dist, cluster_idx, self._global_steps)
+                memory_z, mem_dist, cluster_idx, self._global_steps)
 
         combined = _combine_novelty(rnd_norm, mem_norm, self._mode)
         if new_cluster:

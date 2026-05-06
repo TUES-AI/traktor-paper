@@ -25,6 +25,8 @@ import numpy as np
 
 import _paths  # noqa: F401
 from run_sac_vmm_local_targets import (
+    PCVM_OBS_DIM,
+    PCVMRoverObsBuilder,
     PredictiveRoverObsBuilder,
     action_to_target,
 )
@@ -45,7 +47,8 @@ class RealPredictiveSACEnv(gym.Env):
             low=np.array([-1.0, -1.0], dtype=np.float32),
             high=np.array([1.0, 1.0], dtype=np.float32),
         )
-        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(79,), dtype=np.float32)
+        obs_dim = PCVM_OBS_DIM if args.backend in ('pcvm', 'pcvm-m') else 79
+        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32)
 
         self.rover = RoverAPI(camera_enabled=True)
         self.imu = MPU9150(bus=1, address=0x68)
@@ -59,7 +62,10 @@ class RealPredictiveSACEnv(gym.Env):
                 no_echo_is_clear=not args.no_echo_is_wall,
             ),
         )
-        self.obs_builder = PredictiveRoverObsBuilder(self.rover, self.safety)
+        if args.backend in ('pcvm', 'pcvm-m'):
+            self.obs_builder = PCVMRoverObsBuilder(self.rover, self.safety, mobilenet=(args.backend == 'pcvm-m'))
+        else:
+            self.obs_builder = PredictiveRoverObsBuilder(self.rover, self.safety)
         self.executor = LocalTargetExecutor(
             self.safety,
             config=LocalTargetExecutorConfig(turn_pwm=args.turn_pwm, drive_pwm=args.drive_pwm),
@@ -79,10 +85,15 @@ class RealPredictiveSACEnv(gym.Env):
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         self.last_action = None
-        obs, distances, backend = self.obs_builder.build_predictive(None)
+        obs, distances, backend = self._build_obs(None)
         self.last_backend = backend
         self.last_distances = distances
         return obs, {'distances': distances, 'backend': backend}
+
+    def _build_obs(self, action):
+        if self.args.backend in ('pcvm', 'pcvm-m'):
+            return self.obs_builder.build_pcvm(action)
+        return self.obs_builder.build_predictive(action)
 
     def _recover_if_blocked(self, distances):
         safe, front, threshold = self.safety.is_front_safe(self.args.drive_pwm, distances)
@@ -133,7 +144,7 @@ class RealPredictiveSACEnv(gym.Env):
         if recovery is None:
             execution = self.executor.execute_local_target(target['x_cm'], target['y_cm'])
 
-        obs, distances, backend = self.obs_builder.build_predictive(action)
+        obs, distances, backend = self._build_obs(action)
         reward = self._reward(execution, backend, recovery)
         info = {
             'step': self.step_count,
@@ -156,7 +167,8 @@ class RealPredictiveSACEnv(gym.Env):
 def parse_args():
     parser = argparse.ArgumentParser(description='Train predictive SAC online on the real rover.')
     parser.add_argument('--steps', type=int, default=100)
-    parser.add_argument('--save-path', default='results/predictive_sac_real.zip')
+    parser.add_argument('--backend', choices=['predictive', 'pcvm', 'pcvm-m'], default='pcvm')
+    parser.add_argument('--save-path', default=None)
     parser.add_argument('--resume', default=None)
     parser.add_argument('--sleep', type=float, default=0.2)
     parser.add_argument('--max-theta-deg', type=float, default=75.0)
@@ -183,6 +195,13 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.save_path is None:
+        if args.backend == 'pcvm-m':
+            args.save_path = 'results/pcvm_m_sac_real.zip'
+        elif args.backend == 'pcvm':
+            args.save_path = 'results/pcvm_cnn_sac_real.zip'
+        else:
+            args.save_path = 'results/predictive_sac_real.zip'
     from stable_baselines3 import SAC
 
     env = RealPredictiveSACEnv(args)
