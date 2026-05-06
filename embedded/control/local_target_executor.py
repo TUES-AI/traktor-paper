@@ -43,20 +43,21 @@ class LocalTargetExecutor:
         margin = self.config.obstacle_margin_cm
         if abs(theta_deg) <= 45:
             front = distances['front']
-            if front is None or front < margin:
+            if front is not None and front < margin:
                 return 0.0
-            allowed = min(allowed, max(0.0, front - margin))
+            if front is not None:
+                allowed = min(allowed, max(0.0, front - margin))
         if theta_deg > 25:
             left = distances['left']
-            if left is None or left < margin:
+            if left is not None and left < margin:
                 allowed = 0.0
-            else:
+            elif left is not None:
                 allowed = min(allowed, max(0.0, left - margin))
         if theta_deg < -25:
             right = distances['right']
-            if right is None or right < margin:
+            if right is not None and right < margin:
                 allowed = 0.0
-            else:
+            elif right is not None:
                 allowed = min(allowed, max(0.0, right - margin))
         return allowed
 
