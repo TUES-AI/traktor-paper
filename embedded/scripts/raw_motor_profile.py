@@ -42,7 +42,8 @@ def pin_snapshot():
         'left_in2': LEFT_MOTOR_PINS[1],
         'right_in1': RIGHT_MOTOR_PINS[0],
         'right_in2': RIGHT_MOTOR_PINS[1],
-        'pwm': MOTOR_PWM_PINS[0],
+        'left_pwm': MOTOR_PWM_PINS[0],
+        'right_pwm': MOTOR_PWM_PINS[1],
     }
     return {name: GPIO.input(pin) for name, pin in pins.items()}
 

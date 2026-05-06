@@ -19,6 +19,7 @@ from pathlib import Path
 
 import _paths  # noqa: F401
 from api.rover_api import RoverAPI
+from control.learnable_local_executor import LearnableLocalTargetExecutor
 from control.local_target_executor import LocalTargetExecutor, LocalTargetExecutorConfig
 from control.safety import SafetyConfig, SafetyController
 from drivers.sensors.mpu9150 import MPU9150
@@ -48,6 +49,8 @@ TURN_TOLERANCE_DEG = 5.0
 MAX_TURN_SECONDS = 12.0
 MAX_DRIVE_SECONDS = 4.0
 CM_PER_SECOND = 40.0
+TARGET_REACHED_CM = 18.0
+MAX_TARGET_CORRECTIONS = 4
 
 app = Flask(__name__)
 
@@ -69,6 +72,10 @@ HTML = r"""
 <body>
   <div id="top">
     <button onclick="stopRover()">STOP</button>
+    <button id="modeBtn" onclick="toggleMode()">FREEZE POLICY</button>
+    <button onclick="resetPolicy()">RESET NET</button>
+    <button onclick="runSequence('left_box')">SEQ LEFT</button>
+    <button onclick="runSequence('right_box')">SEQ RIGHT</button>
     <span id="status">connecting...</span>
   </div>
   <canvas id="map"></canvas>
@@ -176,12 +183,19 @@ canvas.addEventListener('pointerdown', async (ev) => {
 });
 
 async function stopRover() { await fetch('/stop', {method: 'POST'}); }
+async function toggleMode() {
+  const r = await fetch('/mode', {method: 'POST'});
+  const data = await r.json();
+  document.getElementById('modeBtn').textContent = data.frozen ? 'TRAIN POLICY' : 'FREEZE POLICY';
+}
+async function resetPolicy() { await fetch('/reset_policy', {method: 'POST'}); }
+async function runSequence(name) { await fetch('/sequence', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name})}); }
 
 const es = new EventSource('/events');
 es.onmessage = (ev) => {
   telemetry = JSON.parse(ev.data);
   const p = telemetry.pose || {x_cm: 0, y_cm: 0};
-  statusEl.textContent = `state=${telemetry.state} pose=(${p.x_cm.toFixed(0)},${p.y_cm.toFixed(0)}) yaw=${telemetry.yaw_deg.toFixed(1)} front=${telemetry.distances.front ?? 'NO'} left=${telemetry.distances.left ?? 'NO'} right=${telemetry.distances.right ?? 'NO'}`;
+  statusEl.textContent = `mode=${telemetry.frozen ? 'FROZEN' : 'TRAIN'} state=${telemetry.state} reward=${telemetry.last_reward?.toFixed?.(2) ?? 'na'} pose=(${p.x_cm.toFixed(0)},${p.y_cm.toFixed(0)}) yaw=${telemetry.yaw_deg.toFixed(1)} front=${telemetry.distances.front ?? 'NO'} left=${telemetry.distances.left ?? 'NO'} right=${telemetry.distances.right ?? 'NO'}`;
   draw();
 };
 es.onerror = () => { statusEl.textContent = 'event stream disconnected'; };
@@ -208,6 +222,9 @@ class RoverWebState:
         self.target = None
         self.state = 'idle'
         self.worker = None
+        self.learner = LearnableLocalTargetExecutor(self.safety, status_callback=self.set_executor_status)
+        self.last_reward = None
+        self.last_report = None
         self.pose_x_cm = 0.0
         self.pose_y_cm = 0.0
         self.drive_active = False
@@ -232,6 +249,8 @@ class RoverWebState:
             'lidar_map': self.lidar_map[-500:],
             'target': self.target,
             'state': self.state,
+            'frozen': self.learner.frozen,
+            'last_reward': self.last_reward,
         })
         for q in list(self.clients):
             try:
@@ -319,6 +338,19 @@ class RoverWebState:
             if self.drive_active:
                 self.last_pose_t = time.monotonic()
 
+    def reset_policy(self):
+        with self.lock:
+            self.learner.reset()
+            self.last_reward = None
+            self.last_report = None
+            self.state = 'policy_reset'
+
+    def toggle_mode(self):
+        with self.lock:
+            frozen = self.learner.set_frozen(not self.learner.frozen)
+            self.state = 'policy_frozen' if frozen else 'policy_training'
+            return frozen
+
     def clip_distance(self, theta_deg, distance_cm):
         distances = self.distances
         allowed = distance_cm
@@ -333,27 +365,61 @@ class RoverWebState:
     def execute_target(self):
         with self.lock:
             target = dict(self.target)
-        executor = LocalTargetExecutor(
-            self.safety,
-            config=LocalTargetExecutorConfig(
-                turn_pwm=TURN_PWM,
-                max_turn_pwm=MAX_TURN_PWM,
-                drive_pwm=DRIVE_PWM,
-                dt=DT,
-                turn_tolerance_deg=TURN_TOLERANCE_DEG,
-                min_turn_progress_deg=MIN_TURN_PROGRESS_DEG,
-                turn_stall_seconds=TURN_STALL_SECONDS,
-                max_turn_seconds=MAX_TURN_SECONDS,
-                max_drive_seconds=MAX_DRIVE_SECONDS,
-                cm_per_second=CM_PER_SECOND,
-            ),
-            status_callback=self.set_executor_status,
-        )
-        executor.execute_local_target(target['local_x_cm'], target['local_y_cm'])
+        report = None
+        for correction_i in range(MAX_TARGET_CORRECTIONS + 1):
+            with self.lock:
+                dx = target['x_cm'] - self.pose_x_cm
+                dy = target['y_cm'] - self.pose_y_cm
+                remaining = math.hypot(dx, dy)
+                local_x, local_y = self.world_to_rover_local(target['x_cm'], target['y_cm'])
+                self.target['local_x_cm'] = local_x
+                self.target['local_y_cm'] = local_y
+                self.state = f'correction_{correction_i} remaining={remaining:.1f}cm'
+            if remaining <= TARGET_REACHED_CM:
+                report = {'reason': 'target_reached_threshold', 'reward': 1.5, 'remaining_cm': remaining}
+                break
+            report = self.learner.execute_local_target(local_x, local_y)
+            with self.lock:
+                self.last_report = report
+                self.last_reward = report.get('reward')
+            if report.get('reason') not in ('complete',):
+                break
         with self.lock:
+            self.last_report = report
+            self.last_reward = report.get('reward') if report else None
             self.state = 'idle'
             self.drive_active = False
             self.rover.stop_motors()
+
+    def run_sequence(self, name):
+        sequences = {
+            'left_box': [(45.0, 25.0), (65.0, 0.0), (45.0, -25.0)],
+            'right_box': [(45.0, -25.0), (65.0, 0.0), (45.0, 25.0)],
+        }
+        points = sequences.get(name)
+        if points is None:
+            with self.lock:
+                self.state = f'unknown_sequence {name}'
+            return
+        def worker():
+            was_frozen = self.learner.frozen
+            self.learner.set_frozen(True)
+            try:
+                for x_cm, y_cm in points:
+                    report = self.learner.execute_local_target(x_cm, y_cm)
+                    with self.lock:
+                        self.last_report = report
+                        self.last_reward = report.get('reward')
+                    if report.get('reason') != 'complete':
+                        break
+            finally:
+                self.learner.set_frozen(was_frozen)
+                with self.lock:
+                    self.state = 'idle'
+                    self.drive_active = False
+        if self.worker is None or not self.worker.is_alive():
+            self.worker = threading.Thread(target=worker, daemon=True)
+            self.worker.start()
 
     def turn_to(self, theta_deg):
         direction = 'left' if theta_deg >= 0 else 'right'
@@ -490,6 +556,24 @@ def target():
 @app.route('/stop', methods=['POST'])
 def stop():
     STATE.stop()
+    return jsonify({'ok': True})
+
+
+@app.route('/mode', methods=['POST'])
+def mode():
+    return jsonify({'ok': True, 'frozen': STATE.toggle_mode()})
+
+
+@app.route('/reset_policy', methods=['POST'])
+def reset_policy():
+    STATE.reset_policy()
+    return jsonify({'ok': True})
+
+
+@app.route('/sequence', methods=['POST'])
+def sequence():
+    data = request.get_json(force=True)
+    STATE.run_sequence(data.get('name', 'left_box'))
     return jsonify({'ok': True})
 
 

@@ -1,14 +1,14 @@
 """Dual H-bridge motor driver using Raspberry Pi BCM GPIO pins.
 
-Each motor uses two direction pins. The two enable/PWM inputs may either use
-separate GPIO pins or share one GPIO pin through a splitter cable:
+Each motor uses two direction pins and its own enable/PWM input:
 
 - `forward`: IN1 high, IN2 low
 - `backward`: IN1 low, IN2 high
 - `stop`: IN1 low, IN2 low and PWM duty cycle 0
 
-Speed is a PWM duty cycle from 0 to 100 percent. With shared PWM, both motors
-receive the same enable signal, so only direction can differ per motor.
+Speed is a PWM duty cycle from 0 to 100 percent. Most higher-level code still
+passes equal left/right duty cycles for now; separate PWM pins are exposed so a
+future executor can vary them deliberately.
 """
 
 import RPi.GPIO as GPIO
@@ -21,13 +21,14 @@ class DualHBridgeMotorDriver:
 
     def __init__(
         self,
-        left_in1=20,
-        left_in2=21,
-        right_in1=16,
-        right_in2=12,
+        left_in1=16,
+        left_in2=1,
+        right_in1=20,
+        right_in2=21,
         left_pwm_pin=19,
-        right_pwm_pin=13,
+        right_pwm_pin=18,
         pwm_frequency_hz=100,
+        right_pwm_beta=1.0,
     ):
         self.left_in1 = left_in1
         self.left_in2 = left_in2
@@ -36,6 +37,7 @@ class DualHBridgeMotorDriver:
         self.left_pwm_pin = left_pwm_pin
         self.right_pwm_pin = right_pwm_pin
         self.pwm_frequency_hz = pwm_frequency_hz
+        self.right_pwm_beta = float(right_pwm_beta)
 
         self.control_pins = (left_in1, left_in2, right_in1, right_in2)
         self.pwm_pins = (left_pwm_pin, right_pwm_pin)
@@ -79,6 +81,9 @@ class DualHBridgeMotorDriver:
             raise ValueError(f'Speed must be between 0 and 100, got {speed}')
         return duty
 
+    def _normalize_right_speed(self, speed):
+        return min(100.0, self._normalize_speed(speed) * self.right_pwm_beta)
+
     def _set_left_state(self, state):
         in1, in2 = state
         GPIO.output(self.left_in1, GPIO.HIGH if in1 else GPIO.LOW)
@@ -93,7 +98,10 @@ class DualHBridgeMotorDriver:
         """Set one motor direction and speed."""
         side_name = self._normalize_side(side)
         state, normalized_direction = self._normalize_direction(direction)
-        duty = 0.0 if normalized_direction == 'stop' else self._normalize_speed(speed)
+        if side_name == 'left':
+            duty = 0.0 if normalized_direction == 'stop' else self._normalize_speed(speed)
+        else:
+            duty = 0.0 if normalized_direction == 'stop' else self._normalize_right_speed(speed)
 
         if side_name == 'left':
             self._set_left_state(state)
@@ -109,7 +117,7 @@ class DualHBridgeMotorDriver:
         left_state, left_norm = self._normalize_direction(left_direction)
         right_state, right_norm = self._normalize_direction(right_direction)
         left_duty = 0.0 if left_norm == 'stop' else self._normalize_speed(left_speed)
-        right_duty = 0.0 if right_norm == 'stop' else self._normalize_speed(right_speed)
+        right_duty = 0.0 if right_norm == 'stop' else self._normalize_right_speed(right_speed)
 
         self._set_left_state(left_state)
         self._set_right_state(right_state)
@@ -129,16 +137,17 @@ class DualHBridgeMotorDriver:
     def set_speed(self, side, speed):
         """Change PWM duty cycle for one motor without changing direction pins."""
         side_name = self._normalize_side(side)
-        duty = self._normalize_speed(speed)
         if side_name == 'left':
+            duty = self._normalize_speed(speed)
             self._left_pwm.ChangeDutyCycle(duty)
         else:
+            duty = self._normalize_right_speed(speed)
             self._right_pwm.ChangeDutyCycle(duty)
         return {'side': side_name, 'speed': duty}
 
     def set_speeds(self, left_speed, right_speed):
         left_duty = self._normalize_speed(left_speed)
-        right_duty = self._normalize_speed(right_speed)
+        right_duty = self._normalize_right_speed(right_speed)
         if self._right_pwm is self._left_pwm:
             self._left_pwm.ChangeDutyCycle(max(left_duty, right_duty))
         else:
@@ -151,7 +160,7 @@ class DualHBridgeMotorDriver:
         left_state = (1 if left_in1 else 0, 1 if left_in2 else 0)
         right_state = (1 if right_in1 else 0, 1 if right_in2 else 0)
         left_duty = 0.0 if left_state == self._STOP else self._normalize_speed(left_speed)
-        right_duty = 0.0 if right_state == self._STOP else self._normalize_speed(right_speed)
+        right_duty = 0.0 if right_state == self._STOP else self._normalize_right_speed(right_speed)
 
         self._set_left_state(left_state)
         self._set_right_state(right_state)

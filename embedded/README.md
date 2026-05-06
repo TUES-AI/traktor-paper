@@ -11,15 +11,16 @@ scripts / future SAC planner
 
 ## Current Hardware
 
-Motors use an L298N with shared enable PWM:
+Motors use an L298N with independent enable PWM pins exposed in code:
 
 ```text
 LEFT_MOTOR_PINS = (16, 1)
 RIGHT_MOTOR_PINS = (20, 21)
-MOTOR_PWM_PINS = (18, 18)
+MOTOR_PWM_PINS = (19, 18)
+RIGHT_MOTOR_PWM_BETA = 1.0
 ```
 
-Because both enables share `GPIO18`, the rover can command independent left/right directions, but not independent left/right PWM speeds. Curves are currently approximated with direction/pulse logic or spin/arc primitives.
+Current higher-level control still usually sends equal requested duty cycles: `left_pwm = right_pwm = value`. `RIGHT_MOTOR_PWM_BETA` is kept at `1.0` for now so it changes nothing, but can later compensate a weaker right side, for example `1.2`.
 
 Ultrasonic mapping:
 

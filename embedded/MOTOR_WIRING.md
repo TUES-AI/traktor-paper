@@ -5,7 +5,7 @@ Current working setup: Raspberry Pi drives a standard L298N motor driver.
 ## Pin Map
 
 ```text
-L298N ENA -> Raspberry Pi GPIO18
+L298N ENA -> Raspberry Pi GPIO19
 L298N ENB -> Raspberry Pi GPIO18
 
 Left motor on L298N channel A:
@@ -22,10 +22,11 @@ This is encoded in `embedded/hardware_pins.py`:
 ```python
 LEFT_MOTOR_PINS = (16, 1)
 RIGHT_MOTOR_PINS = (20, 21)
-MOTOR_PWM_PINS = (18, 18)
+MOTOR_PWM_PINS = (19, 18)
+RIGHT_MOTOR_PWM_BETA = 1.0
 ```
 
-`MOTOR_PWM_PINS = (18, 18)` means both `ENA` and `ENB` share one PWM signal. The rover can command left/right directions independently, but not independent left/right speeds.
+`MOTOR_PWM_PINS = (19, 18)` exposes separate left/right PWM. Current controllers still usually request `left_pwm = right_pwm = value`; the separate pins and `RIGHT_MOTOR_PWM_BETA = 1.0` are hooks for later calibration/learning.
 
 ## Direction Logic
 
@@ -71,6 +72,6 @@ The script is hold-to-run over SSH. SSH does not send real key-release events, s
 
 ## Notes
 
-- Do not set separate left/right speeds while both enables share GPIO18.
+- Do not introduce arc/curved turns through unequal PWM until the safety implications are handled explicitly.
 - If one side stops reversing, check IN wires first, not the Python direction mapping.
 - `set_states()` in `drivers/motor/hbridge.py` is for raw H-bridge debugging.

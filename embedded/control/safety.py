@@ -66,11 +66,17 @@ class SafetyController:
         distances = distances or self.read_distances()
         side_name = 'left' if direction == 'left' else 'right'
         side_cm = distances[side_name]
-        if side_cm is None:
-            return self.config.no_echo_is_clear, side_cm, f'{side_name}_no_echo'
-        if side_cm < self.config.side_turn_clear_cm:
-            return False, side_cm, f'{side_name}_blocked'
-        return True, side_cm, f'{side_name}_clear'
+        # PURE IN-PLACE TANK ROTATION IS ALLOWED REGARDLESS OF SIDE RANGE.
+        # KEEP THE SIDE-BLOCKING LOGIC BELOW ONLY IF WE REINTRODUCE ARC TURNS
+        # OR DOUBLE-PWM FORWARD+TURN MOVEMENTS WHERE THE ROVER TRANSLATES INTO
+        # THE SIDE SENSOR DIRECTION.
+        return True, side_cm, f'{side_name}_ignored_for_in_place_turn'
+
+        # if side_cm is None:
+        #     return self.config.no_echo_is_clear, side_cm, f'{side_name}_no_echo'
+        # if side_cm < self.config.side_turn_clear_cm:
+        #     return False, side_cm, f'{side_name}_blocked'
+        # return True, side_cm, f'{side_name}_clear'
 
     def freer_side(self, distances=None):
         distances = distances or self.read_distances()
