@@ -29,15 +29,15 @@ from collections import deque
 EMBED_DIM       = 128
 HIDDEN_DIM      = 256
 MEMORY_SIZE     = 500       # max embeddings stored
-MEMORY_KNOWN_DIST = 0.08    # below this, update an existing visual-place cluster
+MEMORY_KNOWN_DIST = 0.15    # below this, update an existing visual-place cluster
 MEMORY_UPDATE_RATE = 0.05   # centroid adaptation rate for familiar views
 NOVEL_DIST_THR  = 0.12      # cosine distance → "novel"  (pure memory decision)
 MEMORY_NORM_DIST = 0.18     # distance that saturates memory novelty at 1.0
-MEMORY_SMOOTH_WINDOW = 5
-MEMORY_SMOOTH_RESET_DIST = 0.14
+MEMORY_SMOOTH_WINDOW = 12
+MEMORY_SMOOTH_RESET_DIST = 0.35
 RND_WEIGHT      = 0.65
 MEMORY_WEIGHT   = 0.35
-RND_LR          = 3e-4      # train aggressively — novelty flag controls when, not LR
+RND_LR          = 3e-5      # slow enough to keep signal alive, fast enough to learn familiar states
 RND_UPDATE_FREQ = 1         # update every step
 WARMUP_STEPS    = 5
 CAPTURE_FPS     = 1
@@ -197,7 +197,7 @@ class VMM:
         t   = TRANSFORM(rgb).unsqueeze(0).to(DEVICE)
         return self.encoder(t)   # (1, 128)
 
-    def observe(self, frame_bgr):
+    def observe(self, frame_bgr, yaw_rate_rad_s=0.0):
         z = self._embed(frame_bgr)
 
         # ── Memory signal (smoothed visual-place cluster distance) ─────────
@@ -225,7 +225,9 @@ class VMM:
             combined = max(combined, mem_norm)
 
         # ── Decision: combined learned + explicit memory novelty ────────────
-        is_novel = (created_cluster or combined > 0.5) and (self.step >= WARMUP_STEPS)
+        # Suppress during active turns — angle changes produce false novelty spikes.
+        turning = abs(yaw_rate_rad_s) > 0.3   # ~17 deg/s threshold
+        is_novel = (created_cluster or combined > 0.5) and (self.step >= WARMUP_STEPS) and not turning
 
         self.nov_norm.update(mem_dist)
         self.step += 1
