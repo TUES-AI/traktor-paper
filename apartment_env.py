@@ -246,12 +246,16 @@ class ApartmentContinuousEnv(gym.Env):
     """
     metadata = {"render_modes": ["human", "rgb_array"]}
 
-    def __init__(self, seed=0, render_mode=None, obstacles=None, n_furniture=2):
+    def __init__(self, seed=0, render_mode=None, obstacles=None, n_furniture=2,
+                 reward_mode="coverage"):
         super().__init__()
+        if reward_mode not in ("coverage", "world_feedback"):
+            raise ValueError("reward_mode must be 'coverage' or 'world_feedback'")
         self.render_mode  = render_mode
         self._seed        = seed
         self._rng         = np.random.default_rng(seed)
         self._n_furniture = n_furniture
+        self.reward_mode  = reward_mode
 
         # Fixed structural walls — same every episode
         self._walls = _apt_walls()
@@ -468,7 +472,7 @@ class ApartmentContinuousEnv(gym.Env):
         else:
             self._steps_since_new_cell += 1
 
-        R_NEW_CELL = 1.5   # dense bonus per newly visited grid cell
+        R_NEW_CELL = 1.5 if self.reward_mode == "coverage" else 0.0
         reward = R_STEP + R_MOVE * dist + R_NEW_CELL * new_cells
         if collided:
             reward += R_COLLISION
@@ -485,6 +489,8 @@ class ApartmentContinuousEnv(gym.Env):
             "collisions":     self._collisions,
             "bumper_total":   self._bumper_triggers,
             "coverage":       self._coverage(),
+            "new_cells":      new_cells,
+            "reward_mode":    self.reward_mode,
             "steps":          self.step_count,
         }
         return obs, reward, False, False, info

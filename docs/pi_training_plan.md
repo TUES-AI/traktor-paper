@@ -21,6 +21,12 @@
 
 ## Phase 2 — Build the data pipeline (one script)
 
+Simulator proof-of-concept note: `train_sac.py` now runs SAC in a
+`world_feedback` reward mode. The grid coverage map is kept only for hidden
+evaluation, while RND uses a simulated egocentric camera embedding instead of
+privileged `(x, y)` coordinates. The Pi version should replace that simulated
+embedding with the MobileNetV3 camera embedding below.
+
 10. Camera → MobileNetV3-Small (pretrained, frozen) → 128-dim embedding
 11. Normalise embedding online with running mean/std (Welford's algorithm)
 12. RND: two small MLPs (256→256), fixed target + trained predictor, both taking the 128-dim embedding

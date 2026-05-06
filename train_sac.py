@@ -1,24 +1,24 @@
 """
 SAC: No-VMM (raw sensors) vs VMM-augmented observations
 ---------------------------------------------------------
-SAC-NoVMM : obs = [left, right, front]                              (3 floats)
-SAC-VMM   : obs = [left, right, front, sin(θ), cos(θ), rnd_novelty] (6 floats)
+SAC-NoVMM : obs = [left, right, front] plus movement/safety reward only
+SAC-VMM   : obs = ultrasonic + IMU + simulated egocentric visual RND features
             reward += rnd_novelty * VMM_NOVELTY_SCALE each step
 
-VMM novelty is RND (Random Network Distillation) on
-[left, right, front, sin(theta), cos(theta)] — the same signals available
-on the real rover (HC-SR04 sensors + IMU yaw).  High prediction error = the
-current sensor/pose context is unfamiliar.  The predictor trains online.
-This mirrors the RND branch of the real VMM (which uses MobileNetV3 embeddings
-instead of raw sensor readings).
+VMM novelty is RND (Random Network Distillation) on a 2D egocentric "camera"
+embedding: a forward fan of ray depths plus deterministic endpoint texture.
+This is a simulator stand-in for the real VMM path, where MobileNetV3 embeds
+camera frames and RND runs on those visual embeddings.
 
 Multi-seed: each method runs on N_SEEDS independent obstacle layouts;
 coverage curves are averaged and plotted with mean +/- std shaded bands.
 
-Safety layer: embedded 8-ray bumper reflex always active.
-R_SAFETY=-1.0 per trigger discourages using it as a free turn.
+Safety layer: simulator collision physics stays active; the SAC factories keep
+the reflex bumper off so the replay buffer does not silently store unclamped
+actions as if they were executed.
 
-Training is continuous — single map, coverage accumulates across the full run.
+Training is continuous — single map, coverage is logged as hidden evaluation,
+not used as a reward in the SAC training factories.
 
 Run:
     python train_sac.py            # train + plot
@@ -76,7 +76,9 @@ class SafetyPenaltyWrapper(gym.Wrapper):
 # -- VMM observation wrapper ----------------------------------------------------
 
 _VMM_NOVELTY_SCALE = 0.60  # stronger pull toward unexplored rooms
-_RND_INPUT_DIM     = 7    # [left, right, front, sin(theta), cos(theta), x/W, y/H]
+_SIM_CAMERA_RAYS   = 17
+_SIM_CAMERA_FOV    = np.radians(70.0)
+_RND_INPUT_DIM     = _SIM_CAMERA_RAYS * 3 + 2
 _RND_HIDDEN        = 64
 _RND_OUTPUT_DIM    = 64
 _RND_LR            = 5e-6  # very slow fit — prevents predictor overfitting, keeps novelty alive
@@ -118,11 +120,11 @@ class VMMObsWrapper(gym.Wrapper):
         [left, right, front]          — HC-SR04 ultrasonic sensors
         [sin(θ), cos(θ)]              — IMU heading
         [novelty]                     — RND error at current position
-        [fov_L, fov_C, fov_R]         — RND error at lookahead in each sector
-        [x/W, y/H]                    — normalised odometry position
+        [fov_L, fov_C, fov_R]         — RND error in left/center/right visual sectors
         [yaw_rate]                    — normalised gyro-z (IMU), execution feedback
+        [vl, vr]                      — last executed wheel speeds
 
-    RND input   : [left, right, front, sin(θ), cos(θ)] — direction-aware novelty.
+    RND input   : simulated egocentric camera embedding + IMU heading.
     Reward bonus: novelty * _VMM_NOVELTY_SCALE every step (after warmup).
     """
 
@@ -130,10 +132,10 @@ class VMMObsWrapper(gym.Wrapper):
         super().__init__(env)
         s = env.observation_space
         # obs = [left, right, front, sin(θ), cos(θ), novelty,
-        #        fov_L, fov_C, fov_R, x_norm, y_norm, yaw_rate] — 12-dim
+        #        fov_L, fov_C, fov_R, yaw_rate, vl, vr] — 12-dim
         self.observation_space = spaces.Box(
-            low  = np.concatenate([s.low,  [-1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0]]).astype(np.float32),
-            high = np.concatenate([s.high, [ 1.0,  1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,  1.0]]).astype(np.float32),
+            low  = np.concatenate([s.low,  [-1.0, -1.0, 0.0, 0.0, 0.0, 0.0, -1.0, -1.0, -1.0]]).astype(np.float32),
+            high = np.concatenate([s.high, [ 1.0,  1.0, 1.0, 1.0, 1.0, 1.0,  1.0,  1.0,  1.0]]).astype(np.float32),
         )
         self._target    = _RNDTarget().to(DEVICE)
         self._predictor = _RNDPredictor().to(DEVICE)
@@ -149,25 +151,22 @@ class VMMObsWrapper(gym.Wrapper):
         self._diag_novelties   = []   # normalised novelty every step
         self._diag_fov         = []   # [fov_L, fov_C, fov_R] every step
 
-        # Fixed probe states: one per apartment room — same input every checkpoint
-        # [left, right, front, sin(θ), cos(θ)] at a representative point per room
-        # facing east (θ=0) so sin=0, cos=1.  Sensors set to "open space" (1.0).
-        # 7-dim probes: [l, r, f, sin, cos, x/W, y/H] — each room has unique position
-        from apartment_env import APT_W, APT_H
-        room_positions = [
-            (2.5/APT_W,  11.5/APT_H),   # room1 top-left
-            (7.5/APT_W,  11.5/APT_H),   # room2 top-mid-L
-            (12.0/APT_W, 11.5/APT_H),   # room3 top-mid-R
-            (17.0/APT_W, 11.5/APT_H),   # room4 top-right
-            (4.0/APT_W,  3.0/APT_H),    # room5 bot-left
-            (11.0/APT_W, 3.0/APT_H),    # room6 bot-mid
-            (17.0/APT_W, 3.0/APT_H),    # room7 bot-right
-        ]
-        headings = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
-        self._probe_states = torch.tensor([
-            [1.0, 1.0, 1.0, np.sin(h), np.cos(h), px, py]
-            for (px, py), h in zip(room_positions, headings)
-        ], dtype=torch.float32).to(DEVICE)
+        # Fixed visual probes: synthetic egocentric views with distinct texture
+        # phases. They are diagnostics only; policy/RND training never sees room ids.
+        probes = []
+        for room_i in range(7):
+            phase = 0.7 * room_i
+            ray_features = []
+            for ray_i in range(_SIM_CAMERA_RAYS):
+                d = 0.75 + 0.2 * np.sin(phase + ray_i * 0.31)
+                ray_features.extend([
+                    np.clip(d, 0.0, 1.0),
+                    0.5 + 0.5 * np.sin(phase + ray_i * 0.47),
+                    0.5 + 0.5 * np.cos(phase + ray_i * 0.47),
+                ])
+            heading = 0.5 * room_i
+            probes.append(ray_features + [np.sin(heading), np.cos(heading)])
+        self._probe_states = torch.tensor(probes, dtype=torch.float32).to(DEVICE)
 
     def _unwrap_inner(self):
         inner = self.env
@@ -175,22 +174,38 @@ class VMMObsWrapper(gym.Wrapper):
             inner = inner.env
         return inner
 
-    def _rnd_input(self, obs_3):
-        """Onboard signals + odometry position for position-aware novelty.
+    def _visual_texture(self, x, y, distance):
+        """Deterministic 2D texture seen at a ray hit point.
 
-        Adding x/W, y/H means two rooms with identical sensor geometry
-        are treated as distinct states — critical for multi-room exploration."""
-        from apartment_env import APT_W, APT_H
+        This stands in for camera appearance: rooms/furniture can look different
+        even when range readings are similar, without exposing coordinates to SAC.
+        """
+        if distance >= 0.995:
+            return 0.0, 0.0
+        phase = 2.7 * x + 3.9 * y
+        return 0.5 + 0.5 * np.sin(phase), 0.5 + 0.5 * np.cos(phase)
+
+    def _sim_camera_embedding(self, center_offset=0.0):
+        """Egocentric forward visual fan: depth plus endpoint texture per ray."""
+        from apartment_env import _apt_ray_cast, APT_W, APT_H
+        from rover_coverage_env import SENSOR_MAX
         inner = self._unwrap_inner()
-        vec = np.array([
-            obs_3[0],                    # left sensor
-            obs_3[1],                    # right sensor
-            obs_3[2],                    # front sensor
-            np.sin(inner.theta),         # heading sin
-            np.cos(inner.theta),         # heading cos
-            inner.x / APT_W,            # odometry x (available on real rover)
-            inner.y / APT_H,            # odometry y
-        ], dtype=np.float32)
+        features = []
+        offsets = np.linspace(-_SIM_CAMERA_FOV / 2, _SIM_CAMERA_FOV / 2, _SIM_CAMERA_RAYS)
+        for offset in offsets:
+            angle = inner.theta + center_offset + float(offset)
+            d = _apt_ray_cast(inner.x, inner.y, angle, inner.obstacles, max_dist=SENSOR_MAX)
+            norm_d = float(np.clip(d / SENSOR_MAX, 0.0, 1.0))
+            hx = float(np.clip(inner.x + d * np.cos(angle), 0.0, APT_W))
+            hy = float(np.clip(inner.y + d * np.sin(angle), 0.0, APT_H))
+            tex_s, tex_c = self._visual_texture(hx, hy, norm_d)
+            features.extend([norm_d, tex_s, tex_c])
+        features.extend([np.sin(inner.theta + center_offset), np.cos(inner.theta + center_offset)])
+        return np.array(features, dtype=np.float32)
+
+    def _rnd_input(self, obs_3):
+        _ = obs_3
+        vec = self._sim_camera_embedding()
         return torch.tensor(vec).unsqueeze(0).to(DEVICE)
 
     def _compute_novelty(self, x):
@@ -213,41 +228,11 @@ class VMMObsWrapper(gym.Wrapper):
         return norm
 
     def _fov_novelty(self):
-        """RND novelty evaluated at the lookahead point in each forward sector.
-
-        For each sector (left / center / right), cast the center ray and evaluate
-        the RND predictor at the *hypothetical* sensor context the rover would
-        experience if it moved in that direction.  High error = unfamiliar scene
-        ahead in that sector.
-
-        This is hardware-safe: on the real rover, the camera looks in the forward
-        direction and the RND runs on a MobileNetV3 crop of that view — no oracle,
-        no coverage grid.  Here we simulate that by constructing a synthetic obs
-        from the lookahead position's sensor readings."""
-        from apartment_env import _apt_ray_cast, APT_W, APT_H
-        from rover_coverage_env import SENSOR_MAX
-        inner     = self._unwrap_inner()
-        FOV_RANGE = 2.0   # metres to project ahead per sector
-        SECTOR_CENTERS = [np.radians(40), 0.0, -np.radians(40)]  # left, center, right
-
+        """RND novelty evaluated on left/center/right crops of the current view."""
+        sector_centers = [np.radians(35), 0.0, -np.radians(35)]
         result = []
-        for rel_angle in SECTOR_CENTERS:
-            angle     = inner.theta + rel_angle
-            ray_hit   = _apt_ray_cast(inner.x, inner.y, angle, inner.obstacles,
-                                      max_dist=FOV_RANGE)
-            look_dist = min(ray_hit * 0.85, FOV_RANGE)   # stay clear of obstacle
-            lx = np.clip(inner.x + look_dist * np.cos(angle), 0.0, APT_W)
-            ly = np.clip(inner.y + look_dist * np.sin(angle), 0.0, APT_H)
-            # Synthetic sensor context at lookahead point facing same direction
-            vec = np.array([
-                _apt_ray_cast(lx, ly, angle + np.pi / 2, inner.obstacles) / SENSOR_MAX,
-                _apt_ray_cast(lx, ly, angle - np.pi / 2, inner.obstacles) / SENSOR_MAX,
-                _apt_ray_cast(lx, ly, angle,             inner.obstacles) / SENSOR_MAX,
-                np.sin(angle),
-                np.cos(angle),
-                lx / APT_W,
-                ly / APT_H,
-            ], dtype=np.float32)
+        for rel_angle in sector_centers:
+            vec = self._sim_camera_embedding(center_offset=rel_angle)
             x_t = torch.tensor(vec).unsqueeze(0).to(DEVICE)
             with torch.no_grad():
                 t_out = self._target(x_t)
@@ -258,7 +243,7 @@ class VMMObsWrapper(gym.Wrapper):
         return np.array(result, dtype=np.float32)
 
     def _augment(self, obs, novelty):
-        from apartment_env import APT_W, APT_H
+        from rover_coverage_env import MAX_WHEEL_SPEED
         inner = self._unwrap_inner()
         fov   = self._fov_novelty()
         self._diag_fov.append(fov.copy())
@@ -267,10 +252,10 @@ class VMMObsWrapper(gym.Wrapper):
             np.sin(inner.theta),             # IMU yaw heading
             np.cos(inner.theta),
             novelty,                         # RND novelty at current position
-            fov[0], fov[1], fov[2],          # RND novelty ahead: left/center/right
-            inner.x / APT_W,                 # odometry x
-            inner.y / APT_H,                 # odometry y
+            fov[0], fov[1], fov[2],          # RND novelty in visual sectors
             inner.yaw_rate,                  # gyro-z: execution feedback from IMU
+            inner._vl / MAX_WHEEL_SPEED,
+            inner._vr / MAX_WHEEL_SPEED,
         ], dtype=np.float32)
 
     def rnd_checkpoint_stats(self):
@@ -324,12 +309,18 @@ class VMMObsWrapper(gym.Wrapper):
 # -- Env factories ---------------------------------------------------------------
 
 def make_no_vmm_env(furniture, seed, render_mode=None):
-    env = ApartmentContinuousEnv(seed=seed, obstacles=furniture, render_mode=render_mode)
+    env = ApartmentContinuousEnv(
+        seed=seed, obstacles=furniture, render_mode=render_mode,
+        reward_mode="world_feedback",
+    )
     env.use_stuck_respawn = False
     return SafetyPenaltyWrapper(env)
 
 def make_vmm_env(furniture, seed, render_mode=None):
-    env = ApartmentContinuousEnv(seed=seed, obstacles=furniture, render_mode=render_mode)
+    env = ApartmentContinuousEnv(
+        seed=seed, obstacles=furniture, render_mode=render_mode,
+        reward_mode="world_feedback",
+    )
     env.use_stuck_respawn = False
     env = SafetyPenaltyWrapper(env)
     return VMMObsWrapper(env)
