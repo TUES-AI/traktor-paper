@@ -18,6 +18,8 @@ class LocalTargetExecutorConfig:
     max_drive_seconds: float = 4.0
     cm_per_second: float = 40.0
     obstacle_margin_cm: float = 20.0
+    until_front_stop_cm: float = 40.0
+    until_front_emergency_cm: float = 28.0
 
 
 class LocalTargetExecutor:
@@ -169,6 +171,103 @@ class LocalTargetExecutor:
                     return {'ok': False, 'reason': reason, 'seconds': time.monotonic() - start}
                 time.sleep(cfg.dt)
             return {'ok': True, 'reason': 'duration_complete', 'seconds': time.monotonic() - start}
+        finally:
+            self.safety.rover.stop_motors()
+            time.sleep(0.15)
+
+    def execute_theta_until_front(self, theta_deg, front_stop_cm=None):
+        """Turn to a relative heading, then drive until the front sensor reaches a threshold.
+
+        This is for the scalar SAC action experiment. The heading is rover-relative,
+        because the rover does not have reliable global pose/SLAM. Forward distance
+        is estimated from drive duration and `cm_per_second`; the safety layer still
+        gates close-front recovery before the motion starts.
+        """
+        front_stop_cm = self.config.until_front_stop_cm if front_stop_cm is None else float(front_stop_cm)
+        distances = self.safety.read_distances()
+        reverse_recovery = self.safety.reverse_if_too_close(self.config.drive_pwm, distances)
+        if reverse_recovery is not None:
+            distances = self.safety.read_distances()
+        report = {
+            'target_mode': 'theta_until_front',
+            'theta_deg': float(theta_deg),
+            'front_stop_cm': front_stop_cm,
+            'requested_distance_cm': None,
+            'clipped_distance_cm': 0.0,
+            'start_distances': distances,
+            'reverse_recovery': reverse_recovery,
+            'turn': None,
+            'drive': None,
+            'reason': 'started',
+        }
+        turn = self.turn_to(theta_deg)
+        report['turn'] = turn
+        if not turn['ok']:
+            report['reason'] = f'turn_failed_or_blocked {turn["reason"]}'
+            self.set_status(report['reason'])
+            return report
+        drive = self.drive_until_front(front_stop_cm)
+        report['drive'] = drive
+        report['clipped_distance_cm'] = float(drive.get('estimated_distance_cm') or 0.0)
+        report['reason'] = 'complete' if drive['ok'] else drive['reason']
+        self.set_status('idle' if drive['ok'] else drive['reason'])
+        return report
+
+    def drive_until_front(self, front_stop_cm=None):
+        cfg = self.config
+        front_stop_cm = cfg.until_front_stop_cm if front_stop_cm is None else float(front_stop_cm)
+        emergency_cm = min(float(front_stop_cm), float(cfg.until_front_emergency_cm))
+        start_distances = self.safety.read_distances()
+        front = start_distances['front']
+        if front is not None and front <= front_stop_cm:
+            return {
+                'ok': True,
+                'reason': 'already_at_front_threshold',
+                'seconds': 0.0,
+                'estimated_distance_cm': 0.0,
+                'front_cm': front,
+                'threshold_cm': front_stop_cm,
+            }
+        start = time.monotonic()
+        self.set_status(f'driving_until_front_{front_stop_cm:.1f}cm')
+        self.safety.rover.drive('forward', 'forward', left_speed=cfg.drive_pwm, right_speed=cfg.drive_pwm)
+        last_front = front
+        try:
+            while time.monotonic() - start < cfg.max_drive_seconds:
+                distances = self.safety.read_distances()
+                front = distances['front']
+                if front is not None:
+                    last_front = front
+                    elapsed = time.monotonic() - start
+                    est = min(cfg.max_drive_seconds, elapsed) * cfg.cm_per_second
+                    if front <= front_stop_cm:
+                        return {
+                            'ok': True,
+                            'reason': 'front_threshold_reached',
+                            'seconds': elapsed,
+                            'estimated_distance_cm': est,
+                            'front_cm': front,
+                            'threshold_cm': front_stop_cm,
+                        }
+                    if front <= emergency_cm:
+                        return {
+                            'ok': False,
+                            'reason': 'front_emergency_stop',
+                            'seconds': elapsed,
+                            'estimated_distance_cm': est,
+                            'front_cm': front,
+                            'threshold_cm': emergency_cm,
+                        }
+                time.sleep(cfg.dt)
+            elapsed = time.monotonic() - start
+            return {
+                'ok': True,
+                'reason': 'max_drive_time_before_front_threshold',
+                'seconds': elapsed,
+                'estimated_distance_cm': elapsed * cfg.cm_per_second,
+                'front_cm': last_front,
+                'threshold_cm': front_stop_cm,
+            }
         finally:
             self.safety.rover.stop_motors()
             time.sleep(0.15)

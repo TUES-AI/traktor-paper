@@ -384,11 +384,14 @@ class PCVMRoverObsBuilder(RealRoverObsBuilder):
         return result['obs'].astype(np.float32), distances, backend
 
 
-def action_to_target(action, max_theta_deg, max_distance_cm, min_drive_cm):
+def action_to_target(action, max_theta_deg, max_distance_cm, min_drive_cm, min_distance_cm=0.0):
     theta_norm = clamp(action[0], -1.0, 1.0)
     dist_norm = clamp(action[1], -1.0, 1.0)
     theta_deg = theta_norm * max_theta_deg
-    distance_cm = ((dist_norm + 1.0) * 0.5) * max_distance_cm
+    min_distance_cm = max(0.0, float(min_distance_cm))
+    max_distance_cm = max(min_distance_cm, float(max_distance_cm))
+    distance01 = (dist_norm + 1.0) * 0.5
+    distance_cm = min_distance_cm + distance01 * (max_distance_cm - min_distance_cm)
     if distance_cm < min_drive_cm:
         distance_cm = 0.0
     theta_rad = math.radians(theta_deg)
@@ -400,6 +403,41 @@ def action_to_target(action, max_theta_deg, max_distance_cm, min_drive_cm):
         'x_cm': math.cos(theta_rad) * distance_cm,
         'y_cm': math.sin(theta_rad) * distance_cm,
     }
+
+
+def execution_feedback_to_action(execution_feedback, max_theta_deg, max_distance_cm, min_distance_cm=0.0):
+    """Map what physically happened back into the SAC action contract.
+
+    This is intentionally conservative: if safety clipped motion to zero or only
+    recovery happened, distance becomes -1.0 so PCVM does not learn that the
+    requested forward motion actually happened.
+    """
+    execution = execution_feedback.get('execution') if isinstance(execution_feedback, dict) else None
+    recovery = execution_feedback.get('recovery') if isinstance(execution_feedback, dict) else None
+    theta_deg = 0.0
+    distance_cm = 0.0
+    if recovery:
+        reverse = recovery.get('reverse') or {}
+        if reverse:
+            distance_cm -= max(0.0, float(reverse.get('requested_distance_cm') or 0.0))
+        report = recovery.get('recovery') or {}
+        theta_deg += float(report.get('yaw_deg') or 0.0)
+    if execution:
+        turn = execution.get('turn') or {}
+        theta_deg += float(turn.get('yaw_deg') or execution.get('theta_deg') or 0.0)
+        drive = execution.get('drive') or {}
+        if drive.get('ok'):
+            distance_cm += max(0.0, float(execution.get('clipped_distance_cm') or 0.0))
+
+    theta_norm = clamp(theta_deg / max(1e-6, float(max_theta_deg)), -1.0, 1.0)
+    min_distance_cm = max(0.0, float(min_distance_cm))
+    max_distance_cm = max(min_distance_cm + 1e-6, float(max_distance_cm))
+    if distance_cm <= 0.0:
+        dist_norm = -1.0
+    else:
+        dist01 = (distance_cm - min_distance_cm) / (max_distance_cm - min_distance_cm)
+        dist_norm = clamp(dist01 * 2.0 - 1.0, -1.0, 1.0)
+    return np.array([theta_norm, dist_norm], dtype=np.float32)
 
 
 def parse_args():
@@ -418,6 +456,7 @@ def parse_args():
     parser.add_argument('--sleep', type=float, default=0.25)
     parser.add_argument('--max-theta-deg', type=float, default=75.0)
     parser.add_argument('--max-distance-cm', type=float, default=120.0)
+    parser.add_argument('--min-distance-cm', type=float, default=0.0)
     parser.add_argument('--min-drive-cm', type=float, default=10.0)
     parser.add_argument('--turn-pwm', type=float, default=65.0)
     parser.add_argument('--drive-pwm', type=float, default=90.0)
@@ -518,7 +557,7 @@ def main():
             if reverse is not None:
                 last_execution_feedback = {'recovery': {'reverse': reverse}}
             obs_builder.last_action = np.asarray(action, dtype=np.float32).copy()
-            target = action_to_target(action, args.max_theta_deg, args.max_distance_cm, args.min_drive_cm)
+            target = action_to_target(action, args.max_theta_deg, args.max_distance_cm, args.min_drive_cm, args.min_distance_cm)
             print(json.dumps({
                 'step': step,
                 'distances': distances,
@@ -533,7 +572,9 @@ def main():
                 last_execution_feedback = {'execution': report, 'recovery': {'reverse': reverse} if reverse is not None else None}
             else:
                 last_execution_feedback = None
-            last_executed_action = np.asarray(action, dtype=np.float32).copy()
+            last_executed_action = execution_feedback_to_action(
+                last_execution_feedback or {}, args.max_theta_deg, args.max_distance_cm, args.min_distance_cm
+            )
             time.sleep(args.sleep)
     finally:
         safety.close()

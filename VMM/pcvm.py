@@ -26,13 +26,17 @@ PCVM_LATENT_DIM = 128
 PCVM_HIDDEN_DIM = 256
 PCVM_VIS_FEATURE_DIM = 256
 PCVM_MEMORY_SIZE = 1000
-PCVM_KNOWN_DIST = 0.06
-PCVM_MEMORY_NORM_DIST = 0.16
-PCVM_UPDATE_RATE = 0.05
+PCVM_KNOWN_DIST = 0.015
+PCVM_MEMORY_NORM_DIST = 0.05
+PCVM_UPDATE_RATE = 0.01
+PCVM_VIS_KNOWN_DIST = 0.08
+PCVM_VIS_MEMORY_NORM_DIST = 0.16
+PCVM_VIS_UPDATE_RATE = 0.01
 PCVM_WARMUP_STEPS = 5
-PCVM_RND_WEIGHT = 0.35
-PCVM_MEMORY_WEIGHT = 0.45
-PCVM_SURPRISE_WEIGHT = 0.20
+PCVM_RND_WEIGHT = 0.15
+PCVM_MEMORY_WEIGHT = 0.35
+PCVM_VIS_MEMORY_WEIGHT = 0.45
+PCVM_SURPRISE_WEIGHT = 0.05
 PCVM_YAW_RATE_MAX_DPS = 180.0
 
 PCVM_CANDIDATES = np.array([
@@ -65,11 +69,13 @@ class RunningMean:
 class PCVMMemoryBank:
     """Cluster centroids over path-conditioned recurrent latents."""
 
-    def __init__(self, maxlen=PCVM_MEMORY_SIZE):
+    def __init__(self, maxlen=PCVM_MEMORY_SIZE, known_dist=PCVM_KNOWN_DIST, update_rate=PCVM_UPDATE_RATE):
         self.bank = []
         self.counts = []
         self.last_seen = []
         self.maxlen = int(maxlen)
+        self.known_dist = float(known_dist)
+        self.update_rate = float(update_rate)
 
     def query(self, z):
         if not self.bank:
@@ -81,8 +87,8 @@ class PCVMMemoryBank:
 
     def update(self, z, dist, cluster_idx, step):
         z = z.detach().squeeze(0)
-        if cluster_idx is not None and dist < PCVM_KNOWN_DIST:
-            eta = min(PCVM_UPDATE_RATE, 1.0 / (self.counts[cluster_idx] + 1))
+        if cluster_idx is not None and dist < self.known_dist:
+            eta = min(self.update_rate, 1.0 / (self.counts[cluster_idx] + 1))
             centroid = F.normalize((1.0 - eta) * self.bank[cluster_idx] + eta * z, dim=0)
             self.bank[cluster_idx] = centroid.detach()
             self.counts[cluster_idx] += 1
@@ -149,6 +155,7 @@ class PCVM:
         )
         self.rnd_opt = torch.optim.Adam(self.net.rnd_pred.parameters(), lr=5e-5)
         self.memory = PCVMMemoryBank()
+        self.visual_memory = PCVMMemoryBank(known_dist=PCVM_VIS_KNOWN_DIST, update_rate=PCVM_VIS_UPDATE_RATE)
         self.rnd_norm = RunningMean()
         self.surprise_norm = RunningMean()
         self.losses = deque(maxlen=500)
@@ -252,18 +259,29 @@ class PCVM:
 
         surprise, loss = self._train_transition(visual, proprio, action)
         with torch.no_grad():
+            visual_z = F.normalize(self.net.visual(visual), dim=1)
             z, new_hidden = self.net.encode(visual, proprio, self.hidden)
         self.hidden = new_hidden.detach()
 
         rnd_norm = self._rnd_update(z.detach())
-        mem_dist, cluster_idx = self.memory.query(z.detach())
+        path_mem_dist, path_cluster_idx = self.memory.query(z.detach())
+        visual_mem_dist, visual_cluster_idx = self.visual_memory.query(visual_z.detach())
         if self.step >= PCVM_WARMUP_STEPS:
-            cluster_idx, new_cluster = self.memory.update(z.detach(), mem_dist, cluster_idx, self.step)
+            path_cluster_idx, path_new_cluster = self.memory.update(z.detach(), path_mem_dist, path_cluster_idx, self.step)
+            visual_cluster_idx, visual_new_cluster = self.visual_memory.update(visual_z.detach(), visual_mem_dist, visual_cluster_idx, self.step)
         else:
-            new_cluster = False
-        mem_norm = float(np.clip(mem_dist / PCVM_MEMORY_NORM_DIST, 0.0, 1.0))
+            path_new_cluster = False
+            visual_new_cluster = False
+        path_mem_norm = float(np.clip(path_mem_dist / PCVM_MEMORY_NORM_DIST, 0.0, 1.0))
+        visual_mem_norm = float(np.clip(visual_mem_dist / PCVM_VIS_MEMORY_NORM_DIST, 0.0, 1.0))
+        mem_dist = max(path_mem_dist, visual_mem_dist)
+        mem_norm = max(path_mem_norm, visual_mem_norm)
+        new_cluster = bool(path_new_cluster or visual_new_cluster)
         novelty = float(np.clip(
-            PCVM_MEMORY_WEIGHT * mem_norm + PCVM_RND_WEIGHT * rnd_norm + PCVM_SURPRISE_WEIGHT * surprise,
+            PCVM_MEMORY_WEIGHT * path_mem_norm
+            + PCVM_VIS_MEMORY_WEIGHT * visual_mem_norm
+            + PCVM_RND_WEIGHT * rnd_norm
+            + PCVM_SURPRISE_WEIGHT * surprise,
             0.0,
             1.0,
         ))
@@ -292,10 +310,19 @@ class PCVM:
             'pcvm_surprise': surprise,
             'pcvm_mem_dist': mem_dist,
             'pcvm_mem_norm': mem_norm,
+            'pcvm_path_mem_dist': path_mem_dist,
+            'pcvm_path_mem_norm': path_mem_norm,
+            'pcvm_visual_mem_dist': visual_mem_dist,
+            'pcvm_visual_mem_norm': visual_mem_norm,
             'pcvm_rnd_norm': rnd_norm,
-            'pcvm_cluster_id': cluster_idx,
+            'pcvm_cluster_id': path_cluster_idx,
+            'pcvm_path_cluster_id': path_cluster_idx,
+            'pcvm_visual_cluster_id': visual_cluster_idx,
             'pcvm_new_cluster': new_cluster,
+            'pcvm_path_new_cluster': path_new_cluster,
+            'pcvm_visual_new_cluster': visual_new_cluster,
             'pcvm_bank_size': len(self.memory.bank),
+            'pcvm_visual_bank_size': len(self.visual_memory.bank),
             'pcvm_loss': loss,
             'pcvm_pose': [self.pose_x, self.pose_y, self.yaw_rad],
             'step': self.step,

@@ -24,6 +24,10 @@ from VMM.pcvm import (
     PCVM_RND_WEIGHT,
     PCVM_SURPRISE_WEIGHT,
     PCVM_MEMORY_WEIGHT,
+    PCVM_VIS_MEMORY_WEIGHT,
+    PCVM_VIS_KNOWN_DIST,
+    PCVM_VIS_MEMORY_NORM_DIST,
+    PCVM_VIS_UPDATE_RATE,
     PCVM_WARMUP_STEPS,
     PCVM_YAW_RATE_MAX_DPS,
     PCVMMemoryBank,
@@ -93,6 +97,7 @@ class PCVMMobileNet:
         )
         self.rnd_opt = torch.optim.Adam(self.net.rnd_pred.parameters(), lr=5e-5)
         self.memory = PCVMMemoryBank()
+        self.visual_memory = PCVMMemoryBank(known_dist=PCVM_VIS_KNOWN_DIST, update_rate=PCVM_VIS_UPDATE_RATE)
         self.rnd_norm = RunningMean()
         self.surprise_norm = RunningMean()
         self.hidden = torch.zeros(1, PCVM_HIDDEN_DIM, device=self.device)
@@ -176,18 +181,29 @@ class PCVMMobileNet:
 
         surprise, loss = self._train_transition(visual, proprio, action)
         with torch.no_grad():
+            visual_z = F.normalize(self.net.visual(visual), dim=1)
             z, new_hidden = self.net.encode(visual, proprio, self.hidden)
         self.hidden = new_hidden.detach()
 
         rnd_norm = self._rnd_update(z.detach())
-        mem_dist, cluster_idx = self.memory.query(z.detach())
+        path_mem_dist, path_cluster_idx = self.memory.query(z.detach())
+        visual_mem_dist, visual_cluster_idx = self.visual_memory.query(visual_z.detach())
         if self.step >= PCVM_WARMUP_STEPS:
-            cluster_idx, new_cluster = self.memory.update(z.detach(), mem_dist, cluster_idx, self.step)
+            path_cluster_idx, path_new_cluster = self.memory.update(z.detach(), path_mem_dist, path_cluster_idx, self.step)
+            visual_cluster_idx, visual_new_cluster = self.visual_memory.update(visual_z.detach(), visual_mem_dist, visual_cluster_idx, self.step)
         else:
-            new_cluster = False
-        mem_norm = float(np.clip(mem_dist / PCVM_MEMORY_NORM_DIST, 0.0, 1.0))
+            path_new_cluster = False
+            visual_new_cluster = False
+        path_mem_norm = float(np.clip(path_mem_dist / PCVM_MEMORY_NORM_DIST, 0.0, 1.0))
+        visual_mem_norm = float(np.clip(visual_mem_dist / PCVM_VIS_MEMORY_NORM_DIST, 0.0, 1.0))
+        mem_dist = max(path_mem_dist, visual_mem_dist)
+        mem_norm = max(path_mem_norm, visual_mem_norm)
+        new_cluster = bool(path_new_cluster or visual_new_cluster)
         novelty = float(np.clip(
-            PCVM_MEMORY_WEIGHT * mem_norm + PCVM_RND_WEIGHT * rnd_norm + PCVM_SURPRISE_WEIGHT * surprise,
+            PCVM_MEMORY_WEIGHT * path_mem_norm
+            + PCVM_VIS_MEMORY_WEIGHT * visual_mem_norm
+            + PCVM_RND_WEIGHT * rnd_norm
+            + PCVM_SURPRISE_WEIGHT * surprise,
             0.0,
             1.0,
         ))
@@ -215,10 +231,19 @@ class PCVMMobileNet:
             'pcvm_surprise': surprise,
             'pcvm_mem_dist': mem_dist,
             'pcvm_mem_norm': mem_norm,
+            'pcvm_path_mem_dist': path_mem_dist,
+            'pcvm_path_mem_norm': path_mem_norm,
+            'pcvm_visual_mem_dist': visual_mem_dist,
+            'pcvm_visual_mem_norm': visual_mem_norm,
             'pcvm_rnd_norm': rnd_norm,
-            'pcvm_cluster_id': cluster_idx,
+            'pcvm_cluster_id': path_cluster_idx,
+            'pcvm_path_cluster_id': path_cluster_idx,
+            'pcvm_visual_cluster_id': visual_cluster_idx,
             'pcvm_new_cluster': new_cluster,
+            'pcvm_path_new_cluster': path_new_cluster,
+            'pcvm_visual_new_cluster': visual_new_cluster,
             'pcvm_bank_size': len(self.memory.bank),
+            'pcvm_visual_bank_size': len(self.visual_memory.bank),
             'pcvm_loss': loss,
             'pcvm_pose': [self.pose_x, self.pose_y, self.yaw_rad],
             'pcvm_visual': 'mobilenet_v3_small_imagenet_no_vmm_smoothing',
