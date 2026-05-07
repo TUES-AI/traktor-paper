@@ -162,6 +162,8 @@ class DatasetLogger:
         camera_fps,
         stream_fps,
         jpeg_quality,
+        sensor_timeout_seconds,
+        skip_rotating_frames,
         novelty_enabled=False,
         novelty_fps=1.0,
     ):
@@ -174,6 +176,8 @@ class DatasetLogger:
         self.camera_period = 1.0 / float(camera_fps)
         self.stream_period = 0.0 if float(stream_fps) <= 0 else 1.0 / float(stream_fps)
         self.jpeg_quality = int(jpeg_quality)
+        self.sensor_timeout_seconds = float(sensor_timeout_seconds)
+        self.skip_rotating_frames = bool(skip_rotating_frames)
         self.novelty_enabled = bool(novelty_enabled)
         self.novelty_period = 1.0 / max(float(novelty_fps), 1e-6)
         self.stop_event = threading.Event()
@@ -256,7 +260,7 @@ class DatasetLogger:
                 'command': self._snapshot_command(),
             }
             try:
-                raw_ultra = self.rover.get_ultrasonic(timeout_seconds=0.03)
+                raw_ultra = self.rover.get_ultrasonic(timeout_seconds=self.sensor_timeout_seconds)
                 row['ultrasonic_cm'] = {
                     'right': raw_ultra.get(1),
                     'left': raw_ultra.get(2),
@@ -282,6 +286,7 @@ class DatasetLogger:
         next_stream_t = time.monotonic()
         params = [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
         while not self.stop_event.is_set():
+            loop_start = time.monotonic()
             t0_ns = now_ns()
             try:
                 with self.lock:
@@ -305,8 +310,9 @@ class DatasetLogger:
                         'stream_ok': bool(encoded_ok),
                         'gyro_z': gyro_z,
                         'command': self._snapshot_command(),
+                        'sensor_status': dict(self.latest_status),
                     }
-                    if abs(gyro_z) > GYRO_Z_ROTATING_THRESHOLD:
+                    if self.skip_rotating_frames and abs(gyro_z) > GYRO_Z_ROTATING_THRESHOLD:
                         row['type'] = 'frame_skipped'
                         row['reason'] = 'rotating'
                     else:
@@ -330,10 +336,11 @@ class DatasetLogger:
                 self._write_row(row)
                 next_log_t += self.camera_period
             if self.stream_period > 0:
-                next_stream_t += self.stream_period
-                time.sleep(max(0.0, next_stream_t - time.monotonic()))
+                next_stream_t = max(next_stream_t + self.stream_period, loop_start + self.stream_period)
+                sleep_until = min(next_log_t, next_stream_t)
             else:
-                time.sleep(0.001)
+                sleep_until = next_log_t
+            time.sleep(max(0.0, sleep_until - time.monotonic()))
 
     def _maybe_compute_novelty(self, frame):
         if not self.novelty_enabled or self.vmm is None:
@@ -510,10 +517,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description='WASD teleop with dataset logging.')
     parser.add_argument('--out-root', default='data/manual_runs')
     parser.add_argument('--name', default=None)
-    parser.add_argument('--sensor-hz', type=float, default=20.0)
-    parser.add_argument('--camera-fps', type=float, default=5.0, help='Disk logging and VMM/novelty FPS')
-    parser.add_argument('--stream-fps', type=float, default=0.0, help='Web stream FPS cap; 0 means camera-limited')
-    parser.add_argument('--jpeg-quality', type=int, default=85)
+    parser.add_argument('--sensor-hz', type=float, default=30.0)
+    parser.add_argument('--sensor-timeout-seconds', type=float, default=0.012)
+    parser.add_argument('--camera-fps', type=float, default=12.0, help='Disk logging FPS')
+    parser.add_argument('--stream-fps', type=float, default=12.0, help='Web stream FPS cap; 0 follows disk FPS')
+    parser.add_argument('--jpeg-quality', type=int, default=88)
+    parser.add_argument('--skip-rotating-frames', action='store_true', help='Skip disk frame writes during fast yaw; default records all frames')
     parser.add_argument('--forward-speed', type=float, default=85.0)
     parser.add_argument('--reverse-speed', type=float, default=60.0)
     parser.add_argument('--spin-speed', type=float, default=70.0)
@@ -531,7 +540,8 @@ def parse_args():
 
 
 def make_run_dir(out_root, name):
-    stamp = time.strftime('%Y%m%d_%H%M%S')
+    t = time.time()
+    stamp = time.strftime('%Y%m%d_%H%M%S', time.localtime(t)) + f'_{int((t % 1) * 1e6):06d}us'
     run_name = name or f'wasd_{stamp}'
     return Path(out_root) / run_name
 
@@ -558,6 +568,8 @@ def main():
         camera_fps=args.camera_fps,
         stream_fps=args.stream_fps,
         jpeg_quality=args.jpeg_quality,
+        sensor_timeout_seconds=args.sensor_timeout_seconds,
+        skip_rotating_frames=args.skip_rotating_frames,
         novelty_enabled=args.novelty,
         novelty_fps=args.novelty_fps,
     )

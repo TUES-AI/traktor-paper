@@ -36,7 +36,7 @@ from run_sac_vmm_local_targets import (
 class RealPredictiveSACEnv(gym.Env):
     metadata = {'render_modes': []}
 
-    def __init__(self, args):
+    def __init__(self, args, dashboard=None):
         super().__init__()
         from api.rover_api import RoverAPI
         from control.local_target_executor import LocalTargetExecutor, LocalTargetExecutorConfig
@@ -44,11 +44,12 @@ class RealPredictiveSACEnv(gym.Env):
         from drivers.sensors.mpu9150 import MPU9150
 
         self.args = args
+        self.dashboard = dashboard
         self.action_space = spaces.Box(
             low=np.array([-1.0, -1.0], dtype=np.float32),
             high=np.array([1.0, 1.0], dtype=np.float32),
         )
-        obs_dim = PCVM_OBS_DIM if args.backend in ('pcvm', 'pcvm-m') else 79
+        obs_dim = PCVM_OBS_DIM if args.backend in ('pcvm', 'pcvm-m', 'pcvm-t') else 79
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32)
 
         self.rover = RoverAPI(camera_enabled=True)
@@ -63,8 +64,13 @@ class RealPredictiveSACEnv(gym.Env):
                 no_echo_is_clear=not args.no_echo_is_wall,
             ),
         )
-        if args.backend in ('pcvm', 'pcvm-m'):
-            self.obs_builder = PCVMRoverObsBuilder(self.rover, self.safety, mobilenet=(args.backend == 'pcvm-m'))
+        if args.backend in ('pcvm', 'pcvm-m', 'pcvm-t'):
+            self.obs_builder = PCVMRoverObsBuilder(
+                self.rover,
+                self.safety,
+                mobilenet=(args.backend == 'pcvm-m'),
+                transformer=(args.backend == 'pcvm-t'),
+            )
         else:
             self.obs_builder = PredictiveRoverObsBuilder(self.rover, self.safety)
         self.executor = LocalTargetExecutor(
@@ -97,7 +103,7 @@ class RealPredictiveSACEnv(gym.Env):
         return obs, {'distances': distances, 'backend': backend}
 
     def _build_obs(self, action, execution_feedback=None):
-        if self.args.backend in ('pcvm', 'pcvm-m'):
+        if self.args.backend in ('pcvm', 'pcvm-m', 'pcvm-t'):
             return self.obs_builder.build_pcvm(action, execution_feedback)
         return self.obs_builder.build_predictive(action)
 
@@ -211,6 +217,8 @@ class RealPredictiveSACEnv(gym.Env):
             'reward': reward,
             'reward_terms': self.last_reward_terms,
         }
+        if self.dashboard is not None:
+            self.dashboard.update(info, getattr(self.obs_builder, 'last_frame', None))
         print(json.dumps(info, sort_keys=True), flush=True)
         self.last_action = action.copy()
         self.last_backend = backend
@@ -222,7 +230,7 @@ class RealPredictiveSACEnv(gym.Env):
 def parse_args():
     parser = argparse.ArgumentParser(description='Train predictive SAC online on the real rover.')
     parser.add_argument('--steps', type=int, default=100)
-    parser.add_argument('--backend', choices=['predictive', 'pcvm', 'pcvm-m'], default='pcvm')
+    parser.add_argument('--backend', choices=['predictive', 'pcvm', 'pcvm-m', 'pcvm-t'], default='pcvm')
     parser.add_argument('--save-path', default=None)
     parser.add_argument('--resume', default=None)
     parser.add_argument('--sleep', type=float, default=0.2)
@@ -250,6 +258,8 @@ def parse_args():
     parser.add_argument('--path-near-radius-m', type=float, default=0.45)
     parser.add_argument('--path-far-radius-m', type=float, default=1.5)
     parser.add_argument('--path-memory-size', type=int, default=400)
+    parser.add_argument('--viz-port', type=int, default=0)
+    parser.add_argument('--viz-depth-model', default='depth-anything/Depth-Anything-V2-Small-hf')
     return parser.parse_args()
 
 
@@ -258,13 +268,22 @@ def main():
     if args.save_path is None:
         if args.backend == 'pcvm-m':
             args.save_path = 'results/pcvm_m_sac_real.zip'
+        elif args.backend == 'pcvm-t':
+            args.save_path = 'results/pcvm_t_sac_real.zip'
         elif args.backend == 'pcvm':
             args.save_path = 'results/pcvm_cnn_sac_real.zip'
         else:
             args.save_path = 'results/predictive_sac_real.zip'
     from stable_baselines3 import SAC
 
-    env = RealPredictiveSACEnv(args)
+    dashboard = None
+    if args.viz_port:
+        from tools.rover_visual_dashboard import DashboardConfig, RoverVisualDashboard
+
+        dashboard = RoverVisualDashboard(DashboardConfig(port=args.viz_port, depth_model=args.viz_depth_model))
+        dashboard.start()
+        print(json.dumps({'visual_dashboard': f'http://0.0.0.0:{args.viz_port}', 'depth_model': args.viz_depth_model}, sort_keys=True), flush=True)
+    env = RealPredictiveSACEnv(args, dashboard=dashboard)
     try:
         if args.resume:
             model = SAC.load(args.resume, env=env)

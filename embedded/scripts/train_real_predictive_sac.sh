@@ -17,4 +17,6 @@ exec "$PYTHON_BIN" embedded/scripts/train_real_predictive_sac.py \
   --path-away-bonus "${PREDICTIVE_PATH_AWAY_BONUS:-0.25}" \
   --path-near-radius-m "${PREDICTIVE_PATH_NEAR_RADIUS_M:-0.45}" \
   --path-far-radius-m "${PREDICTIVE_PATH_FAR_RADIUS_M:-1.5}" \
+  --viz-port "${PREDICTIVE_VIZ_PORT:-0}" \
+  --viz-depth-model "${PREDICTIVE_VIZ_DEPTH_MODEL:-depth-anything/Depth-Anything-V2-Small-hf}" \
   "$@"
