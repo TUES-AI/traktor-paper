@@ -1,0 +1,37 @@
+{
+  "run_name": "pcvm_theta_front_coverage_resume100_from150",
+  "human_sequence": "corridor1 -> room1 -> corridor2 with overlapping/similar view -> room2",
+  "human_label": "really really really good; went through corridor, room, out to second corridor, then second room",
+  "steps": 100,
+  "reward_sum": 31.497553368886884,
+  "reward_mean": 0.3149755336888688,
+  "reward_median": -0.26625760759302897,
+  "travel_m": 20.267618060400167,
+  "net_displacement_m": 5.656441230532324,
+  "bbox_area_m2": 22.275654863130388,
+  "coverage_bonus_sum": 21.796954605118817,
+  "blocked_open_bonus_sum": 13.645833333333332,
+  "loop_penalty_sum": 24.950337811122303,
+  "phases": [
+    {
+      "start": 1,
+      "end": 34,
+      "label": "corridor 1"
+    },
+    {
+      "start": 35,
+      "end": 55,
+      "label": "room 1"
+    },
+    {
+      "start": 56,
+      "end": 83,
+      "label": "corridor 2\n(similar view)"
+    },
+    {
+      "start": 84,
+      "end": 100,
+      "label": "room 2"
+    }
+  ]
+}

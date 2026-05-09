@@ -31,11 +31,11 @@ exec "$PYTHON_BIN" embedded/scripts/train_real_predictive_sac.py \
   --motion-gate-cm "${PCVM_THETA_FRONT_MOTION_GATE_CM:-3}" \
   --yaw-gate-deg "${PCVM_THETA_FRONT_YAW_GATE_DEG:-8}" \
   --motion-novelty-weight "${PCVM_THETA_FRONT_MOTION_NOVELTY_WEIGHT:-1.50}" \
-  --new-cluster-bonus "${PCVM_THETA_FRONT_NEW_CLUSTER_BONUS:-2.50}" \
+  --new-cluster-bonus "${PCVM_THETA_FRONT_NEW_CLUSTER_BONUS:-0.50}" \
   --slow-surprise-weight "${PCVM_THETA_FRONT_SURPRISE_WEIGHT:-0.05}" \
   --safe-motion-bonus "${PCVM_THETA_FRONT_SAFE_MOTION_BONUS:-0.30}" \
   --safe-motion-min-cm "${PCVM_THETA_FRONT_SAFE_MOTION_MIN_CM:-10}" \
-  --executed-distance-weight "${PCVM_THETA_FRONT_EXECUTED_DISTANCE_WEIGHT:-1.00}" \
+  --executed-distance-weight "${PCVM_THETA_FRONT_EXECUTED_DISTANCE_WEIGHT:-1.20}" \
   --recent-revisit-penalty "${PCVM_THETA_FRONT_RECENT_REVISIT_PENALTY:-0.12}" \
   --near-obstacle-penalty "${PCVM_THETA_FRONT_NEAR_OBSTACLE_PENALTY:-0.10}" \
   --side-near-cm "${PCVM_THETA_FRONT_SIDE_NEAR_CM:-25}" \
@@ -50,11 +50,13 @@ exec "$PYTHON_BIN" embedded/scripts/train_real_predictive_sac.py \
   --loop-long-move-scale "${PCVM_THETA_FRONT_LOOP_LONG_MOVE_SCALE:-0.45}" \
   --recovery-streak-window "${PCVM_THETA_FRONT_RECOVERY_STREAK_WINDOW:-8}" \
   --recovery-streak-penalty "${PCVM_THETA_FRONT_RECOVERY_STREAK_PENALTY:-0.00}" \
-  --blocked-open-turn-bonus "${PCVM_THETA_FRONT_BLOCKED_OPEN_TURN_BONUS:-1.50}" \
+  --blocked-open-turn-bonus "${PCVM_THETA_FRONT_BLOCKED_OPEN_TURN_BONUS:-2.50}" \
   --blocked-open-before-cm "${PCVM_THETA_FRONT_BLOCKED_OPEN_BEFORE_CM:-55}" \
   --blocked-open-min-theta-deg "${PCVM_THETA_FRONT_BLOCKED_OPEN_MIN_THETA_DEG:-25}" \
   --blocked-open-min-improvement-cm "${PCVM_THETA_FRONT_BLOCKED_OPEN_MIN_IMPROVEMENT_CM:-20}" \
   --blocked-open-scale-cm "${PCVM_THETA_FRONT_BLOCKED_OPEN_SCALE_CM:-120}" \
+  --coverage-bbox-weight "${PCVM_THETA_FRONT_COVERAGE_BBOX_WEIGHT:-0.80}" \
+  --coverage-radius-weight "${PCVM_THETA_FRONT_COVERAGE_RADIUS_WEIGHT:-0.50}" \
   --viz-port "${PCVM_THETA_FRONT_VIZ_PORT:-0}" \
   --viz-depth-model "${PCVM_THETA_FRONT_VIZ_DEPTH_MODEL:-depth-anything/Depth-Anything-V2-Small-hf}" \
   "$@"

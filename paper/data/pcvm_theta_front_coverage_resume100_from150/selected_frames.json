@@ -1,0 +1,93 @@
+[
+  {
+    "step": 1,
+    "tag": "high_novelty",
+    "reward": 2.876841903059695,
+    "novelty": 1.0,
+    "coverage_bonus": 0.4143457522842045
+  },
+  {
+    "step": 2,
+    "tag": "high_novelty",
+    "reward": -0.20350294565362662,
+    "novelty": 1.0,
+    "coverage_bonus": 0.0
+  },
+  {
+    "step": 3,
+    "tag": "high_novelty",
+    "reward": 1.7040081303053856,
+    "novelty": 1.0,
+    "coverage_bonus": 0.04526331303242523
+  },
+  {
+    "step": 4,
+    "tag": "high_novelty",
+    "reward": -0.14748413941160451,
+    "novelty": 1.0,
+    "coverage_bonus": 0.0
+  },
+  {
+    "step": 5,
+    "tag": "high_novelty",
+    "reward": 4.318511062095409,
+    "novelty": 1.0,
+    "coverage_bonus": 1.073507618208677
+  },
+  {
+    "step": 83,
+    "tag": "high_novelty",
+    "reward": -0.26392912542490443,
+    "novelty": 0.16258656978607178,
+    "coverage_bonus": 0.0
+  },
+  {
+    "step": 89,
+    "tag": "high_reward",
+    "reward": 6.156533035676328,
+    "novelty": 0.0619940459728241,
+    "coverage_bonus": 4.685647650729592
+  },
+  {
+    "step": 35,
+    "tag": "high_reward",
+    "reward": 5.831549521423566,
+    "novelty": 0.0754857063293457,
+    "coverage_bonus": 1.8633960301721895
+  },
+  {
+    "step": 39,
+    "tag": "high_reward",
+    "reward": 4.482662222620226,
+    "novelty": 0.04891395568847656,
+    "coverage_bonus": 3.04161692762844
+  },
+  {
+    "step": 43,
+    "tag": "high_reward",
+    "reward": 4.353737838263388,
+    "novelty": 0.060819387435913086,
+    "coverage_bonus": 1.357094098364989
+  },
+  {
+    "step": 87,
+    "tag": "high_reward",
+    "reward": 3.9659425785716245,
+    "novelty": 0.030061006546020508,
+    "coverage_bonus": 0.8346935502849806
+  },
+  {
+    "step": 38,
+    "tag": "high_coverage",
+    "reward": 3.4208942372907623,
+    "novelty": 0.0785374641418457,
+    "coverage_bonus": 2.4006593550757582
+  },
+  {
+    "step": 90,
+    "tag": "high_coverage",
+    "reward": 3.115147444724081,
+    "novelty": 0.07424473762512207,
+    "coverage_bonus": 1.8875043915353873
+  }
+]

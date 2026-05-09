@@ -7,6 +7,9 @@
 \usepackage{graphicx}
 \usepackage{subcaption}
 \usepackage{booktabs} % for professional tables
+\usepackage{stfloats}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
 
 % hyperref makes hyperlinks in the resulting PDF.
 % If your build breaks (sometimes temporarily if a hyperlink spans a page)
@@ -57,12 +60,12 @@
 
 % The \icmltitle you define below is probably too long as a header.
 % Therefore, a short form for the running title is supplied here:
-\icmltitlerunning{Onboard RND for Mapless Rover Exploration}
+\icmltitlerunning{Grounded Exploration from Onboard World Feedback}
 
 \begin{document}
 
 \twocolumn[
-  \icmltitle{Onboard Random Network Distillation for Mapless Rover Exploration}
+  \icmltitle{Grounded Exploration: Decoupled Planning and Terrain-Adaptive Execution from Onboard World Feedback}
 
   % It is OKAY to include author information, even for blind submissions: the
   % style file will automatically remove it for you unless you've provided
@@ -105,7 +108,22 @@
   % will not be shown in the document
   \icmlkeywords{reinforcement learning from world feedback, mapless exploration, mobile robotics, intrinsic motivation}
 
-  \vskip 0.3in
+  \vskip 0.15in
+
+  \begin{center}
+  \begin{minipage}{0.92\textwidth}
+  \begin{abstract}
+  Classical deterministic planners fail in unstructured real-world environments where maps and external instrumentation are unavailable. We present a real-world reinforcement learning pipeline for a physical rover that learns to explore using world feedback alone. Intrinsic reward is derived from a Vision Memory Model that scores how novel each new scene is using Random Network Distillation on live camera frames. We deploy and train directly on hardware with a safety layer constraining motor commands, and propose novel places found --- the number of visually distinct scenes accumulated during an evaluation episode --- as a practical, instrumentation-free exploration metric.
+  \end{abstract}
+  \end{minipage}
+
+  \vskip 0.08in
+  \resizebox{0.96\textwidth}{!}{\includegraphics{data/hero_placeholder/figures/hero_placeholder.jpg}}
+  \refstepcounter{figure}\label{fig:hero-placeholder}
+  {\small \textbf{Figure~\thefigure: Placeholder --- get better images of this.} Real-rover RLxF exploration overview: physical platform, apartment-scale trajectory, and world-feedback reward traces. This temporary teaser sets the intended first-page feel before final photography and plotting.}
+  \end{center}
+
+  \vskip 0.15in
 ]
 
 % this must go after the closing bracket ] following \twocolumn[ ...
@@ -122,119 +140,171 @@
 % Or, if applicable, use the standard equal contribution text:
 % \printAffiliationsAndNotice{\icmlEqualContribution}
 
-\begin{abstract}
-
-Classical deterministic planners fail in unstructured real-world environments where maps and external instrumentation are unavailable. We present a real-world reinforcement learning pipeline for a physical rover that learns to explore using world feedback alone. Intrinsic reward is derived from a Vision Memory Model that scores how novel each new scene is using Random Network Distillation on live camera frames. We deploy and train directly on hardware with a safety layer constraining motor commands, and propose novel places found — the number of visually distinct scenes accumulated during an evaluation episode — as a practical, instrumentation-free exploration metric.
-
-  
-\end{abstract}
-
 \section{Introduction}
-Autonomous exploration is usually framed as a mapping problem: estimate free space, detect frontiers, plan to an informative boundary, and update a global map. This framing has led to strong systems when odometry, depth, compute, and calibration are reliable \citep{yamauchi1997frontier,thrun2005probabilistic}. It is much less forgiving on small low-cost robots operating with only a monocular camera, a few range sensors, and noisy inertial measurements. In such settings the map is often the least reliable object in the system: it drifts, aliases visually similar corridors, and can fail before learning has an opportunity to improve behavior.
+Autonomous exploration is usually framed as mapping: estimate free space, detect frontiers, and plan to informative boundaries \citep{yamauchi1997frontier,thrun2005probabilistic}. This assumption is brittle on small low-cost robots with only monocular vision, short-range sensors, and noisy inertial measurements. In damaged buildings or rubble, the map may also change while the robot is operating.
 
-We study a deliberately constrained alternative: \emph{mapless exploration from world feedback}. A physical rover must learn online, on board, and without external instrumentation, pre-built maps, or simulator pretraining as the source of the final policy. The only feedback available after an action is what the robot itself observes: camera frames, short-range distance sensors, inertial response, whether the requested motion was executed, and whether safety recovery was required. This places the problem close to reinforcement learning from world feedback (RLxF): the environment itself supplies the evaluative signal, while the designer specifies how to convert raw consequences into a reward.
+We study \emph{mapless exploration from world feedback}. A physical rover learns online without external instrumentation, pre-built maps, or simulator pretraining. After each action, the only feedback is onboard: camera frames, range sensors, inertial response, executed motion, and recovery events. The environment supplies consequences; the designer specifies how to turn them into reward.
 
-The central hypothesis is that useful exploration behavior can be obtained without learning raw motor control. Instead, learning should decide \emph{where to try to go next} at a low temporal frequency, while a deterministic safety-bounded executor handles the immediate actuation details. This separation is important for real hardware. Raw motor reinforcement learning is sample-inefficient, unsafe, and confounds two questions that should be separated: which local direction is worth exploring, and how should the platform realize that command near obstacles? Our current experiments therefore use high-level local motion abstractions, such as a relative heading followed by forward progress until a front-distance threshold is reached.
+The central hypothesis is that learning should decide \emph{where to try next}, not raw motor PWM. A deterministic executor realizes the command near obstacles. Our strongest current abstraction is a relative heading followed by forward motion until the world, via front-range feedback, says to stop.
 
-Intrinsic motivation provides the natural reward source for mapless exploration. Prediction error, episodic novelty, and random network distillation (RND) have all been used to encourage agents to seek states that are new under their learned representation \citep{pathak2017curiosity,burda2019rnd,savinov2019episodic}. However, transferring this idea to a physical rover introduces two failure modes that are less visible in simulator benchmarks. First, visual novelty alone can reward nuisance changes such as blur, lighting, or seeing the same wall from slightly different distances. Second, a rover can collect positive novelty while physically failing: turning in place, repeatedly touching a wall, or cycling through a corridor. World-feedback reward must therefore be conditioned on \emph{executed motion} and penalize recovery, zero-progress, and recent revisits.
+Intrinsic motivation is a natural reward source \citep{pathak2017curiosity,burda2019rnd,savinov2019episodic}, but real hardware exposes failure modes hidden in simulation: blur can look novel, wall contact can produce new pixels, and corridor loops can collect reward. We therefore gate novelty by executed motion and log penalties for recovery, zero-progress, and revisits.
 
-This paper is an in-progress report on a real-rover RLxF system. The final architecture is still under active development, but the problem formulation and experimental protocol are already fixed enough to be useful. We make three design commitments. First, the final policy is trained and adapted on the real platform rather than obtained through offline behavioral cloning or simulator transfer. Second, any saved human or autonomous trajectories are used for analysis, reward auditing, and diagnostic ablations, not as supervised pretraining data. Third, evaluation emphasizes instrumentation-free quantities available to the robot and a reviewer: physically successful motion, visually novel places found, recovery frequency, and qualitative coverage of a real apartment environment.
+This is an in-progress real-rover RLxF report. The policy is trained on hardware; saved trajectories are for auditing and ablations, not supervised pretraining. Evaluation uses quantities available to the robot and reviewer: successful motion, novel places, recovery frequency, and qualitative apartment coverage.
 
-Our contribution is the formulation and implementation of a minimal real-world benchmark for low-cost mapless exploration: an onboard RL loop with intrinsic visual memory, safety-gated local actions, and logged world-feedback rewards suitable for offline auditing. The remainder of the paper describes the system components that are independent of the final feature encoder or policy variant.
+Our contribution is a minimal real-world benchmark and prototype stack: onboard RL, intrinsic visual memory, safety-gated local actions, and auditable world-feedback rewards.
 
 \section{Methodology}
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}[
+    font=\scriptsize,
+    box/.style={draw, rounded corners, align=center, minimum height=0.34in, minimum width=0.68in},
+    arrow/.style={-Latex, thick}
+  ]
+    \node[box] (obs) {camera\\range\\IMU};
+    \node[box, right=0.12in of obs] (pcvm) {PCVM\\novelty};
+    \node[box, right=0.12in of pcvm] (sac) {SAC\\planner};
+    \node[box, below=0.14in of sac] (exec) {executor};
+    \node[box, left=0.12in of exec] (safety) {safety\\recovery};
+    \node[box, left=0.12in of safety] (world) {world\\feedback};
+    \draw[arrow] (obs) -- (pcvm);
+    \draw[arrow] (pcvm) -- (sac);
+    \draw[arrow] (sac) -- node[right]{heading} (exec);
+    \draw[arrow] (exec) -- (safety);
+    \draw[arrow] (safety) -- (world);
+    \draw[arrow] (world) -- node[left]{executed motion} (obs);
+  \end{tikzpicture}
+  \caption{Current decoupled architecture. The Predictive Contextual Visual Memory (PCVM) module supplies novelty; SAC chooses a relative heading; the executor and safety layer determine what actually happens and return world feedback.}
+  \label{fig:architecture-placeholder}
+\end{figure}
+
 \subsection{Problem setting}
 
-We consider a rover operating in an unknown indoor environment. At time $t$ the robot receives an observation
+At time $t$ the rover receives
 \begin{equation}
 o_t = (I_t, d_t, m_t, a_{t-1}, e_{t-1}),
 \end{equation}
-where $I_t$ is the onboard camera image, $d_t$ are short-range distance measurements, $m_t$ denotes inertial and proprioceptive signals, $a_{t-1}$ is the previous high-level action, and $e_{t-1}$ summarizes what the executor actually achieved. The policy selects a low-dimensional local guide $a_t$, not motor PWM commands. The executor converts $a_t$ into motor commands subject to hard safety constraints. After execution, the robot observes $o_{t+1}$ and receives a scalar reward $r_t$ computed only from onboard world feedback.
+where $I_t$ is the camera image, $d_t$ range, $m_t$ inertial/proprioceptive state, $a_{t-1}$ the previous high-level action, and $e_{t-1}$ what the executor actually achieved. The policy selects a local guide $a_t$, not motor commands; the executor applies safety constraints and returns world feedback.
 
-The goal is to maximize exploration over a fixed real-time or fixed-step budget. We do not assume a metric map or ground-truth pose. Approximate dead-reckoned pose may be logged for diagnostics, but it is not treated as an oracle. The practical evaluation question is: did the rover visit more distinct places while avoiding repeated unsafe or zero-progress behavior?
+The goal is exploration under a fixed step budget, without a metric map or ground-truth pose. Dead-reckoned pose is only diagnostic.
 
 \subsection{Local action abstraction}
 
-The policy acts at a slower rate than the motor controller. In the current strongest prototype, the action is a scalar relative heading
+The current action is a scalar relative heading
 \begin{equation}
 a_t \in [-1,1], \qquad \theta_t = \theta_{\max} a_t,
 \end{equation}
-with $\theta_{\max}=75^\circ$. The executor first turns by $\theta_t$ relative to the current body frame, then drives forward until the front range sensor reaches a safety threshold or a maximum drive duration expires. This action is intentionally local and egocentric. It does not require global localization, and it biases exploration toward meaningful forward progress rather than short dithering motions.
+with $\theta_{\max}=75^\circ$. The executor turns by $\theta_t$, then drives until the front sensor reaches a threshold or a max duration expires. This local, egocentric interface avoids global localization and discourages tiny dithering moves.
 
-Other local guide parameterizations, such as short $(\theta, \rho)$ targets or curvature--horizon--speed commands, fit the same framework. The important constraint is that the learned policy proposes a \emph{motion intent}, while the executor remains responsible for safety, clipping, and recovery.
+Other guides, such as short $(\theta,\rho)$ targets, fit the same framework. The key separation is intent from execution.
 
 \subsection{Onboard novelty memory}
 
-The exploration reward is built around an online visual memory model. A feature encoder maps the camera frame and recent action context into an embedding $z_t$. The memory bank stores representative embeddings of previously visited experience. Novelty is estimated by distance to the nearest memory item and/or by prediction error from an RND-style target-predictor pair \citep{burda2019rnd}. A simplified novelty term is
+We call the current memory backend \emph{Predictive Contextual Visual Memory} (PCVM). It maps the frame and action context to $z_t$ and stores representative embeddings. Novelty is nearest-memory distance and/or RND-style prediction error \citep{burda2019rnd}:
 \begin{equation}
 n_t = \alpha \, \mathrm{dist}(z_t, \mathcal{M}_{t-1}) + \beta \, \|f_{\mathrm{pred}}(I_t)-f_{\mathrm{target}}(I_t)\|_2^2,
 \end{equation}
-where $\mathcal{M}_{t-1}$ is the current memory bank and $f_{\mathrm{target}}$ is fixed. If $z_t$ is farther than a threshold from existing representatives, a new memory item is added or updated slowly.
+where $\mathcal{M}_{t-1}$ is memory and $f_{\mathrm{target}}$ is fixed. Distant embeddings create or update memory representatives.
 
-The exact encoder is not fixed in this draft. We have tested lightweight convolutional features, recurrent path-conditioned memory, and frozen visual backbones. The paper's final claims will depend on the version that survives real-world ablations. The methodology, however, does not rely on a particular encoder: any onboard representation can be inserted as long as it produces online novelty estimates from the robot's own observations.
+The final encoder is not fixed; we have tested lightweight CNNs, recurrent path-conditioned memory, and frozen backbones. The framework only requires onboard novelty estimates.
 
 \subsection{World-feedback reward}
 
-Naively rewarding novelty is not enough on hardware. A robot can observe new pixels while failing to make useful progress. We therefore compute reward from both perceptual novelty and execution feedback:
+Novelty alone is insufficient: the robot can see new pixels while stuck. Reward combines perceptual novelty with execution feedback:
 \begin{align}
-r_t ={}& w_n \, \mathbb{1}[\mathrm{motion}_t] n_t
-      + w_c \, \mathbb{1}[\mathrm{new\ cluster}_t]
-      + w_d \, \Delta s_t
-      + w_s \, \mathbb{1}[\mathrm{safe\ motion}_t] \\
-     &- \lambda_r R_t
-      - \lambda_0 Z_t
-      - \lambda_l L_t
-      - \lambda_o O_t .
+r_t ={}& r_t^{+} - r_t^{-}, \\
+r_t^{+} ={}& w_n\,\mathbb{1}[M_t] n_t
+       + w_c C_t
+       + w_d \Delta s_t
+       + w_s S_t, \\
+r_t^{-} ={}& \lambda_r R_t
+       + \lambda_0 Z_t
+       + \lambda_l L_t
+       + \lambda_o O_t .
 \end{align}
-Here $\Delta s_t$ is estimated executed forward distance, $R_t$ denotes recovery or reverse events, $Z_t$ denotes zero-forward or already-at-front outcomes, $L_t$ penalizes recent local revisits, and $O_t$ penalizes near-obstacle operation. The novelty term is motion-gated, so visual changes collected while stuck or only turning in place are not treated as successful exploration.
+Here $M_t$ gates novelty by motion, $C_t$ denotes cluster/coverage expansion, $S_t$ safe motion, $\Delta s_t$ executed distance, and $R_t,Z_t,L_t,O_t$ recovery, zero-forward, revisit, and obstacle penalties.
 
-This reward is best viewed as an auditable interface between the physical world and the learning algorithm. Each term is logged separately, enabling post-run comparison between scalar reward and human visual judgment. In practice this has been essential: early rewards over-valued safe-looking corridor loops, while later loop-aware terms better separated broad apartment coverage from repeated wall contacts.
+Each term is logged separately, so scalar reward can be audited against video. This exposed early over-rewarding of corridor loops and motivated loop-aware penalties.
 
 \subsection{Training and data usage}
 
-We use an off-policy continuous-control learner, currently Soft Actor-Critic \citep{haarnoja2018sac}, because it can update from the short and noisy streams available during real deployments. The replay buffer is populated online from the rover's own experience. Safety checks run outside the policy and can override or clip execution; the policy receives the resulting feedback so that failed intents are not recorded as successful motion.
+We currently use SAC \citep{haarnoja2018sac}. Replay is populated online from rover experience. Safety can clip execution, and the policy receives the executed-action feedback.
 
-Saved runs are used in a restricted way. Manual driving and autonomous trajectories provide camera frames, sensor traces, reward terms, and human annotations such as ``covered all rooms'' or ``looped in corridor.'' These data are valuable for debugging reward functions and evaluating candidate visual memories offline. They are not used to pretrain the final exploration policy, preserving the RLxF setting in which policy improvement comes from real online interaction with the world.
+Saved manual/autonomous runs are used only for reward auditing, memory diagnostics, and figures, not policy pretraining.
 
 \subsection{Evaluation protocol}
 
-Our planned evaluation uses multiple short autonomous episodes in the same apartment environment. Primary measurements are: number of visually distinct places discovered, fraction of steps with successful forward execution, recovery count, zero-progress count, approximate path spread from dead reckoning, and qualitative frame review. We additionally keep representative autonomous runs as frozen diagnostic datasets for reward-alignment tests. One such run contains 200 autonomous steps that reached all five rooms but included many corridor loops and wall contacts; it is a useful example because a good metric should recognize both its high coverage and its local-control failures.
+Evaluation uses short autonomous episodes with successful-forward fraction, recoveries, zero-progress, dead-reckoned spread, and frame review. Frozen runs serve as reward-alignment diagnostics.
+
+\section{Preliminary Real-Rover Experiments}
+
+\paragraph{Use case framing.}
+The motivating deployment is an unknown and changing indoor structure, e.g. a small rescue rover entering damaged buildings or rubble. The robot cannot rely on a precomputed map, but it can evaluate the consequences of its actions through onboard feedback.
+
+\paragraph{Representative run.}
+Figure~\ref{fig:hero-placeholder} includes reward and trajectory panels from a 100-step continuation run. The human-observed sequence was corridor $\rightarrow$ room $\rightarrow$ visually similar second corridor $\rightarrow$ second room. The third segment receives less novelty, plausibly because the apartment has an X-shaped corridor geometry with overlapping views. This is qualitative until repeated runs and ablations are complete.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.48\textwidth]{data/hero_placeholder/raw/final_run_map.jpg}
+  \caption{Placeholder apartment/run map. This half-column figure is only for layout exploration; replace with a cleaned schematic or manually annotated map before submission.}
+  \label{fig:placeholder-apartment-map}
+\end{figure}
+
+The run scored $+31.5$ over 100 actions, traveled $20.3\,$m, reached $5.7\,$m net displacement, and expanded the dead-reckoned box to $22.3\,\mathrm{m}^2$. It still had two contact/stall events and many recoveries, so the controller is not solved; the result only suggests that the action/reward interface can produce room-to-room exploration.
+
+\clearpage
+
+\begin{table*}[!t]
+  \centering
+  \caption{Placeholder ablation and benchmark matrix. Empty cells mark measurements to fill after repeated runs.}
+  \label{tab:placeholder-benchmarks}
+  \small
+  \resizebox{\textwidth}{!}{%
+  \begin{tabular}{lcccccc}
+    \toprule
+    System / ablation & Rooms & Travel & Contacts & Reward & Notes & Status \\
+    \midrule
+    Short local target PCVM &  &  &  &  &  & old baseline \\
+    Theta-front PCVM &  &  &  &  &  & current baseline \\
+    Theta-front + coverage reward &  &  &  &  &  & current run \\
+    No surprise term &  &  &  &  &  & planned \\
+    Executed-action memory &  &  &  &  &  & planned \\
+    Human WASD reference &  &  &  &  &  & reference \\
+    \bottomrule
+  \end{tabular}}
+\end{table*}
 
 \section{Ablations}
 
 \paragraph{Draft notes from current rover runs.}
-These are working notes, not final claims. The strongest current empirical observation is that the action interface matters more than the particular visual-memory variant: short vector or $(\theta, \rho)$ local targets tended to produce timid motion, while a scalar relative-heading action followed by forward execution until a front-range threshold produced the first run that reached all five rooms. This suggests an ablation between fixed-distance local targets and world-bounded execution, where the policy chooses direction but onboard feedback determines the realized travel horizon. A second candidate ablation is requested-action memory versus executed-action memory: using what the rover actually did after safety clipping/recovery appears more faithful than storing only the intended command. The dual-memory patch, separating path/action-conditioned memory from raw visual memory, is worth testing but should not yet be claimed as a final architecture; current visual clustering still needs stronger evidence. We also need a direct surprise ablation: run the same memory/reward setup with transition-surprise disabled versus enabled, because prediction error may capture useful unmodeled transitions but may also reward blur, sensor noise, and collision artifacts.
+Current evidence points first to action interface: short local targets produced timid motion, while relative-heading plus world-bounded execution reached multiple rooms. This motivates a fixed-distance target vs. drive-until-front ablation. A second ablation is requested-action memory vs. executed-action memory, because safety clipping and recovery change what physically happened. A third is surprise on/off: transition error may capture useful unmodeled outcomes, but may also reward blur, noise, or collision artifacts.
+
+\paragraph{Reward-alignment drafts.}
+The coverage reward was introduced after visual review showed that a two-room run scored lower than a corridor loop. Future ablations should rank frozen runs by human labels: corridor loop $<$ corridor+one-room $<$ corridor+two-room. This allows reward tuning before spending hardware time.
+
+\paragraph{Architecture drafts.}
+The current PCVM module still aliases similar rooms/corridors. We plan to compare lightweight CNN features, frozen pretrained encoders, and dual path/visual memory while keeping the same theta-front executor.
 
 \section{Conclusion \& Future Work}
+
+This draft supports a narrow claim: decoupled planning and terrain-adaptive execution can produce useful real-rover exploration from onboard world feedback. Future work is safety-aware reward, separate sensor/safety monitors for low-cost hardware, and stronger pretrained visual encoders for room-level novelty.
 
 
 % In the unusual situation where you want a paper to appear in the
 % references without citing it in the main text, use \nocite
 % \nocite{langley00}
 
+\clearpage
 \bibliography{example_paper}
 \bibliographystyle{icml2026}
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% APPENDIX
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\newpage
+\clearpage
 \appendix
-\onecolumn
-\section{You \emph{can} have an appendix here.}
+\section{Appendix Placeholder}
 
-You can have as much text here as you want. The main body must be at most $8$
-pages long. For the final version, one more page can be added. If you want, you
-can use an appendix like this one.
-
-The $\mathtt{\backslash onecolumn}$ command above can be kept in place if you
-prefer a one-column appendix, or can be removed if you prefer a two-column
-appendix.  Apart from this possible change, the style (font size, spacing,
-margins, page numbering, etc.) should be kept the same as the main body.
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+This appendix will contain extended run sheets, additional frame grids, reward-audit details, and repeated-run ablations. The main paper target is four pages before references and appendix.
 
 \end{document}
 

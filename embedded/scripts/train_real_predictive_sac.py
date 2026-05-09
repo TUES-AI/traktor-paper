@@ -322,6 +322,38 @@ class RealPredictiveSACEnv(gym.Env):
         terms['blocked_open_score'] = max(open_score, improvement_score)
         return float(bonus), terms
 
+    def _coverage_expansion_bonus(self, backend):
+        pose = backend.get('pcvm_pose') if backend else None
+        if not pose or len(pose) < 2 or not self.path_points:
+            return 0.0, {
+                'coverage_bbox_area_before_m2': 0.0,
+                'coverage_bbox_area_after_m2': 0.0,
+                'coverage_bbox_delta_m2': 0.0,
+                'coverage_radius_delta_m': 0.0,
+            }
+        x = float(pose[0])
+        y = float(pose[1])
+        xs = [p[0] for p in self.path_points]
+        ys = [p[1] for p in self.path_points]
+        area_before = (max(xs) - min(xs)) * (max(ys) - min(ys)) if len(xs) > 1 else 0.0
+        area_after = (max(max(xs), x) - min(min(xs), x)) * (max(max(ys), y) - min(min(ys), y))
+        area_delta = max(0.0, area_after - area_before)
+
+        start_x, start_y = self.path_points[0]
+        radius_before = max(float(np.hypot(px - start_x, py - start_y)) for px, py in self.path_points)
+        radius_after = max(radius_before, float(np.hypot(x - start_x, y - start_y)))
+        radius_delta = max(0.0, radius_after - radius_before)
+        bonus = self.args.coverage_bbox_weight * area_delta + self.args.coverage_radius_weight * radius_delta
+        return float(bonus), {
+            'coverage_bbox_area_before_m2': area_before,
+            'coverage_bbox_area_after_m2': area_after,
+            'coverage_bbox_delta_m2': area_delta,
+            'coverage_radius_before_m': radius_before,
+            'coverage_radius_after_m': radius_after,
+            'coverage_radius_delta_m': radius_delta,
+            'coverage_expansion_bonus': float(bonus),
+        }
+
     def _slow_rlxf_reward(self, execution, backend, recovery):
         terms = self._executed_motion_terms(execution, recovery)
         novelty = float(backend.get('pcvm_mem_norm') or backend.get('predictive_novelty') or 0.0)
@@ -344,6 +376,7 @@ class RealPredictiveSACEnv(gym.Env):
         ) else 0.0
         distance_reward = self.args.executed_distance_weight * min(1.0, terms['executed_distance_cm'] / max(1e-6, self.args.max_distance_cm))
         blocked_open_turn_bonus, blocked_open_terms = self._blocked_open_turn_bonus(execution)
+        coverage_expansion_bonus, coverage_terms = self._coverage_expansion_bonus(backend)
 
         recent_revisit_penalty = 0.0
         if cluster_id is not None and not new_cluster:
@@ -364,7 +397,15 @@ class RealPredictiveSACEnv(gym.Env):
             zero_forward_penalty = self.args.zero_forward_penalty
         loop_penalty, loop_terms = self._loop_penalty(backend, terms)
 
-        reward += novelty_reward + new_cluster_bonus + surprise_reward + safe_motion_bonus + distance_reward + blocked_open_turn_bonus
+        reward += (
+            novelty_reward
+            + new_cluster_bonus
+            + surprise_reward
+            + safe_motion_bonus
+            + distance_reward
+            + blocked_open_turn_bonus
+            + coverage_expansion_bonus
+        )
         reward -= (
             recent_revisit_penalty
             + near_obstacle_penalty
@@ -388,6 +429,7 @@ class RealPredictiveSACEnv(gym.Env):
             'safe_motion_bonus': safe_motion_bonus,
             'executed_distance_reward': distance_reward,
             'blocked_open_turn_bonus': blocked_open_turn_bonus,
+            'coverage_expansion_bonus': coverage_expansion_bonus,
             'recent_revisit_penalty': recent_revisit_penalty,
             'near_obstacle_raw': near_obstacle_raw,
             'near_obstacle_penalty': near_obstacle_penalty,
@@ -399,6 +441,7 @@ class RealPredictiveSACEnv(gym.Env):
             'loop_penalty': loop_penalty,
             **loop_terms,
             **blocked_open_terms,
+            **coverage_terms,
             **terms,
         }
         return float(reward)
@@ -593,6 +636,8 @@ def parse_args():
     parser.add_argument('--blocked-open-min-theta-deg', type=float, default=25.0)
     parser.add_argument('--blocked-open-min-improvement-cm', type=float, default=20.0)
     parser.add_argument('--blocked-open-scale-cm', type=float, default=120.0)
+    parser.add_argument('--coverage-bbox-weight', type=float, default=0.0)
+    parser.add_argument('--coverage-radius-weight', type=float, default=0.0)
     parser.add_argument('--viz-port', type=int, default=0)
     parser.add_argument('--viz-depth-model', default='depth-anything/Depth-Anything-V2-Small-hf')
     return parser.parse_args()
