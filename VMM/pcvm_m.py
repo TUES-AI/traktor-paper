@@ -16,6 +16,7 @@ import torch.nn.functional as F
 
 from VMM.pcvm import (
     PCVM_CANDIDATES,
+    PCVM_DEFAULT_ACTION_DIM,
     PCVM_HIDDEN_DIM,
     PCVM_KNOWN_DIST,
     PCVM_LATENT_DIM,
@@ -33,6 +34,8 @@ from VMM.pcvm import (
     PCVMMemoryBank,
     RunningMean,
     clamp,
+    pcvm_candidates,
+    pcvm_obs_dim,
 )
 
 
@@ -56,17 +59,18 @@ class MobileNetVisualEncoder(nn.Module):
 
 
 class PCVMmNet(nn.Module):
-    def __init__(self):
+    def __init__(self, action_dim=PCVM_DEFAULT_ACTION_DIM):
         super().__init__()
+        self.action_dim = int(action_dim)
         self.visual = MobileNetVisualEncoder(out_dim=256)
-        self.proprio = nn.Sequential(nn.Linear(11, 128), nn.ReLU(), nn.Linear(128, 128), nn.ReLU())
+        self.proprio = nn.Sequential(nn.Linear(8 + self.action_dim, 128), nn.ReLU(), nn.Linear(128, 128), nn.ReLU())
         self.gru = nn.GRUCell(256 + 128, PCVM_HIDDEN_DIM)
         self.proj = nn.Linear(PCVM_HIDDEN_DIM, PCVM_LATENT_DIM)
         self.transition = nn.Sequential(
-            nn.Linear(PCVM_LATENT_DIM + 2, 256), nn.ReLU(), nn.Linear(256, PCVM_LATENT_DIM)
+            nn.Linear(PCVM_LATENT_DIM + self.action_dim, 256), nn.ReLU(), nn.Linear(256, PCVM_LATENT_DIM)
         )
         self.inverse = nn.Sequential(
-            nn.Linear(PCVM_LATENT_DIM * 2, 256), nn.ReLU(), nn.Linear(256, 2), nn.Tanh()
+            nn.Linear(PCVM_LATENT_DIM * 2, 256), nn.ReLU(), nn.Linear(256, self.action_dim), nn.Tanh()
         )
         self.rnd_target = nn.Sequential(nn.Linear(PCVM_LATENT_DIM, 256), nn.ReLU(), nn.Linear(256, 128))
         self.rnd_pred = nn.Sequential(
@@ -83,9 +87,10 @@ class PCVMmNet(nn.Module):
 
 
 class PCVMMobileNet:
-    def __init__(self, device=None):
+    def __init__(self, device=None, action_dim=PCVM_DEFAULT_ACTION_DIM):
         self.device = torch.device(device or ('cuda' if torch.cuda.is_available() else 'cpu'))
-        self.net = PCVMmNet().to(self.device)
+        self.action_dim = int(action_dim)
+        self.net = PCVMmNet(action_dim=self.action_dim).to(self.device)
         self.opt = torch.optim.Adam(
             list(self.net.visual.proj.parameters())
             + list(self.net.proprio.parameters())
@@ -127,7 +132,8 @@ class PCVMMobileNet:
     def _update_pose(self, action, yaw_rate_norm, dt):
         yaw_rate_dps = clamp(yaw_rate_norm, -1.0, 1.0) * PCVM_YAW_RATE_MAX_DPS
         self.yaw_rad += math.radians(yaw_rate_dps) * max(0.0, float(dt))
-        forward = clamp((float(action[1]) + 1.0) * 0.5, 0.0, 1.0)
+        action = np.asarray(action, dtype=np.float32).reshape(-1)
+        forward = 1.0 if len(action) == 1 else clamp((float(action[1]) + 1.0) * 0.5, 0.0, 1.0)
         signed = forward if abs(float(action[0])) < 0.9 else 0.25 * forward
         self.pose_x = clamp(self.pose_x + math.cos(self.yaw_rad) * signed * max(0.0, float(dt)), -10.0, 10.0)
         self.pose_y = clamp(self.pose_y + math.sin(self.yaw_rad) * signed * max(0.0, float(dt)), -10.0, 10.0)
@@ -164,16 +170,19 @@ class PCVMMobileNet:
         return self.rnd_norm.ratio(float(loss.detach().item()))
 
     def candidate_scores(self, z):
+        candidates = pcvm_candidates(self.action_dim)
         with torch.no_grad():
-            zt = z.repeat(len(PCVM_CANDIDATES), 1)
-            at = torch.as_tensor(PCVM_CANDIDATES, dtype=torch.float32, device=self.device)
+            zt = z.repeat(len(candidates), 1)
+            at = torch.as_tensor(candidates, dtype=torch.float32, device=self.device)
             pred = F.normalize(self.net.transition(torch.cat([zt, at], dim=1)), dim=1)
             score = torch.linalg.vector_norm(pred - zt, dim=1)
             score = score / (score.mean() + 1e-6)
             return torch.clamp(score / 3.0, 0, 1).detach().cpu().numpy().astype(np.float32)
 
     def observe(self, frame_bgr, sensors, motion, action, dt):
-        action = np.asarray(action, dtype=np.float32)
+        action = np.asarray(action, dtype=np.float32).reshape(-1)[:self.action_dim]
+        if len(action) < self.action_dim:
+            action = np.pad(action, (0, self.action_dim - len(action))).astype(np.float32)
         sensors = np.asarray(sensors, dtype=np.float32)
         motion = np.asarray(motion, dtype=np.float32)
         visual = self._tensor(self.preprocess_frame(frame_bgr))
@@ -216,7 +225,7 @@ class PCVMMobileNet:
             self.candidate_scores(z.detach()),
             np.concatenate([sensors, motion]).astype(np.float32),
         ]).astype(np.float32)
-        assert obs.shape == (PCVM_OBS_DIM,)
+        assert obs.shape == (pcvm_obs_dim(self.action_dim),)
 
         self.prev_visual = visual.detach()
         self.prev_proprio = proprio.detach()

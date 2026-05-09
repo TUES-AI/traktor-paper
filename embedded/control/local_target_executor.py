@@ -161,6 +161,7 @@ class LocalTargetExecutor:
         start = time.monotonic()
         self.set_status(f'driving_{distance_cm:.1f}cm')
         self.safety.rover.drive('forward', 'forward', left_speed=cfg.drive_pwm, right_speed=cfg.drive_pwm)
+        contact_monitor = self.safety.begin_forward_contact_monitor()
         try:
             while time.monotonic() - start < seconds:
                 distances = self.safety.read_distances()
@@ -169,6 +170,20 @@ class LocalTargetExecutor:
                     reason = f'front_safety_stop front={front} threshold={threshold:.1f}'
                     self.set_status(reason)
                     return {'ok': False, 'reason': reason, 'seconds': time.monotonic() - start}
+                contact = self.safety.update_forward_contact_monitor(contact_monitor)
+                if contact and contact.get('contact_or_stall'):
+                    elapsed = time.monotonic() - start
+                    self.set_status('contact_or_stall reversing')
+                    recovery = self.safety.forward_contact_recovery(contact)
+                    return {
+                        'ok': False,
+                        'reason': 'contact_or_stall',
+                        'seconds': elapsed,
+                        'estimated_distance_cm': 0.0,
+                        'contact_or_stall': True,
+                        'stall_score': recovery.get('stall_score', 1.0),
+                        'contact_recovery': recovery,
+                    }
                 time.sleep(cfg.dt)
             return {'ok': True, 'reason': 'duration_complete', 'seconds': time.monotonic() - start}
         finally:
@@ -225,12 +240,14 @@ class LocalTargetExecutor:
                 'reason': 'already_at_front_threshold',
                 'seconds': 0.0,
                 'estimated_distance_cm': 0.0,
+                'start_distances': start_distances,
                 'front_cm': front,
                 'threshold_cm': front_stop_cm,
             }
         start = time.monotonic()
         self.set_status(f'driving_until_front_{front_stop_cm:.1f}cm')
         self.safety.rover.drive('forward', 'forward', left_speed=cfg.drive_pwm, right_speed=cfg.drive_pwm)
+        contact_monitor = self.safety.begin_forward_contact_monitor()
         last_front = front
         try:
             while time.monotonic() - start < cfg.max_drive_seconds:
@@ -246,6 +263,7 @@ class LocalTargetExecutor:
                             'reason': 'front_threshold_reached',
                             'seconds': elapsed,
                             'estimated_distance_cm': est,
+                            'start_distances': start_distances,
                             'front_cm': front,
                             'threshold_cm': front_stop_cm,
                         }
@@ -255,9 +273,27 @@ class LocalTargetExecutor:
                             'reason': 'front_emergency_stop',
                             'seconds': elapsed,
                             'estimated_distance_cm': est,
+                            'start_distances': start_distances,
                             'front_cm': front,
                             'threshold_cm': emergency_cm,
                         }
+                contact = self.safety.update_forward_contact_monitor(contact_monitor)
+                if contact and contact.get('contact_or_stall'):
+                    elapsed = time.monotonic() - start
+                    self.set_status('contact_or_stall reversing')
+                    recovery = self.safety.forward_contact_recovery(contact)
+                    return {
+                        'ok': False,
+                        'reason': 'contact_or_stall',
+                        'seconds': elapsed,
+                        'estimated_distance_cm': 0.0,
+                        'start_distances': start_distances,
+                        'front_cm': last_front,
+                        'threshold_cm': front_stop_cm,
+                        'contact_or_stall': True,
+                        'stall_score': recovery.get('stall_score', 1.0),
+                        'contact_recovery': recovery,
+                    }
                 time.sleep(cfg.dt)
             elapsed = time.monotonic() - start
             return {
@@ -265,6 +301,7 @@ class LocalTargetExecutor:
                 'reason': 'max_drive_time_before_front_threshold',
                 'seconds': elapsed,
                 'estimated_distance_cm': elapsed * cfg.cm_per_second,
+                'start_distances': start_distances,
                 'front_cm': last_front,
                 'threshold_cm': front_stop_cm,
             }

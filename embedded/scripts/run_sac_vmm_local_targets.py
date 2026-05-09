@@ -33,7 +33,7 @@ YAW_RATE_MAX_DPS = 180.0
 PREDICTIVE_CAM_W = 32
 PREDICTIVE_CAM_H = 16
 PREDICTIVE_LATENT_DIM = 64
-PCVM_OBS_DIM = 143
+from VMM.pcvm import PCVM_OBS_DIM, pcvm_obs_dim
 PREDICTIVE_CANDIDATES = np.array([
     [0.0, 0.25],
     [-0.7, 0.0],
@@ -294,21 +294,23 @@ class PredictiveRoverObsBuilder(RealRoverObsBuilder):
 
 
 class PCVMRoverObsBuilder(RealRoverObsBuilder):
-    def __init__(self, rover, safety, mobilenet=False, transformer=False):
+    def __init__(self, rover, safety, mobilenet=False, transformer=False, action_dim=1):
         super().__init__(rover, safety, use_camera_vmm=False)
         self.last_frame = None
+        self.action_dim = int(action_dim)
+        self.last_action = np.zeros(self.action_dim, dtype=np.float32)
         if transformer:
             from VMM.pcvm_t import PCVMTransformer
 
-            self.model = PCVMTransformer()
+            self.model = PCVMTransformer(action_dim=self.action_dim)
         elif mobilenet:
             from VMM.pcvm_m import PCVMMobileNet
 
-            self.model = PCVMMobileNet()
+            self.model = PCVMMobileNet(action_dim=self.action_dim)
         else:
             from VMM.pcvm import PCVM
 
-            self.model = PCVM()
+            self.model = PCVM(action_dim=self.action_dim)
         self.last_t = time.monotonic()
         self.pose_x = 0.0
         self.pose_y = 0.0
@@ -355,14 +357,13 @@ class PCVMRoverObsBuilder(RealRoverObsBuilder):
         ], dtype=np.float32)
         motion = np.array([
             clamp(self.last_yaw_rate / YAW_RATE_MAX_DPS, -1.0, 1.0),
-            0.0,
-            float(self.last_action[0]),
-            float(self.last_action[1]),
-        ], dtype=np.float32)
+        ] + [float(x) for x in np.asarray(self.last_action, dtype=np.float32).reshape(-1)[:self.action_dim]], dtype=np.float32)
         action = np.asarray(
             last_executed_action if last_executed_action is not None else self.last_action,
             dtype=np.float32,
-        )
+        ).reshape(-1)[:self.action_dim]
+        if len(action) < self.action_dim:
+            action = np.pad(action, (0, self.action_dim - len(action))).astype(np.float32)
         now = time.monotonic()
         dt = max(1e-3, now - self.last_t)
         self.last_t = now
@@ -372,8 +373,8 @@ class PCVMRoverObsBuilder(RealRoverObsBuilder):
             result = self.model.observe(frame, sensors=sensors, motion=motion, action=action, dt=dt)
         except Exception as exc:
             print(json.dumps({'warning': 'pcvm_failed', 'error': repr(exc)}), flush=True)
-            obs = np.zeros(PCVM_OBS_DIM, dtype=np.float32)
-            obs[-7:] = np.concatenate([sensors, motion]).astype(np.float32)
+            obs = np.zeros(pcvm_obs_dim(self.action_dim), dtype=np.float32)
+            obs[-len(np.concatenate([sensors, motion])):] = np.concatenate([sensors, motion]).astype(np.float32)
             result = {'obs': obs, 'pcvm_error': repr(exc), 'pcvm_novelty': 0.0, 'pcvm_surprise': 0.0}
         backend = {k: v for k, v in result.items() if k != 'obs'}
         backend['pcvm_pose'] = [self.pose_x, self.pose_y, self.pose_yaw]
@@ -481,7 +482,8 @@ def main():
 
     model = SAC.load(args.model)
     obs_dim = int(np.prod(model.observation_space.shape))
-    expected_obs_dim = {'no-vmm': 3, 'vmm': 12, 'mine': 79, 'pcvm': PCVM_OBS_DIM, 'pcvm-m': PCVM_OBS_DIM, 'pcvm-t': PCVM_OBS_DIM}[args.mode]
+    pcvm_dim = pcvm_obs_dim(2)
+    expected_obs_dim = {'no-vmm': 3, 'vmm': 12, 'mine': 79, 'pcvm': pcvm_dim, 'pcvm-m': pcvm_dim, 'pcvm-t': pcvm_dim}[args.mode]
     if obs_dim != expected_obs_dim:
         raise ValueError(f'Mode {args.mode} expects obs_dim={expected_obs_dim}, model has obs_dim={obs_dim}')
     print(json.dumps({
@@ -508,7 +510,7 @@ def main():
     if args.mode == 'mine':
         obs_builder = PredictiveRoverObsBuilder(rover, safety)
     elif args.mode in ('pcvm', 'pcvm-m', 'pcvm-t'):
-        obs_builder = PCVMRoverObsBuilder(rover, safety, mobilenet=(args.mode == 'pcvm-m'), transformer=(args.mode == 'pcvm-t'))
+        obs_builder = PCVMRoverObsBuilder(rover, safety, mobilenet=(args.mode == 'pcvm-m'), transformer=(args.mode == 'pcvm-t'), action_dim=2)
     else:
         obs_builder = RealRoverObsBuilder(rover, safety, use_camera_vmm=(args.mode == 'vmm' and not args.no_camera_vmm))
     executor = LocalTargetExecutor(

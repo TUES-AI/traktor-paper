@@ -33,6 +33,7 @@ from run_sac_vmm_local_targets import (
     action_to_target,
     execution_feedback_to_action,
     clamp,
+    pcvm_obs_dim,
 )
 
 
@@ -52,7 +53,8 @@ class RealPredictiveSACEnv(gym.Env):
             low=np.full((1 if args.action_mode == 'theta_until_front' else 2,), -1.0, dtype=np.float32),
             high=np.full((1 if args.action_mode == 'theta_until_front' else 2,), 1.0, dtype=np.float32),
         )
-        obs_dim = PCVM_OBS_DIM if args.backend in ('pcvm', 'pcvm-m', 'pcvm-t') else 79
+        self.policy_action_dim = int(self.action_space.shape[0])
+        obs_dim = pcvm_obs_dim(self.policy_action_dim) if args.backend in ('pcvm', 'pcvm-m', 'pcvm-t') else 79
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32)
 
         self.rover = RoverAPI(camera_enabled=True)
@@ -73,6 +75,7 @@ class RealPredictiveSACEnv(gym.Env):
                 self.safety,
                 mobilenet=(args.backend == 'pcvm-m'),
                 transformer=(args.backend == 'pcvm-t'),
+                action_dim=self.policy_action_dim,
             )
         else:
             self.obs_builder = PredictiveRoverObsBuilder(self.rover, self.safety)
@@ -286,6 +289,39 @@ class RealPredictiveSACEnv(gym.Env):
                 penalty = max(penalty, 0.5 * max(0.0, 1.0 - float(side) / max(1e-6, self.args.side_near_cm)))
         return float(np.clip(penalty, 0.0, 1.0))
 
+    def _blocked_open_turn_bonus(self, execution):
+        if not execution or self.args.blocked_open_turn_bonus <= 0.0:
+            return 0.0, {}
+        turn = execution.get('turn') or {}
+        drive = execution.get('drive') or {}
+        start_distances = execution.get('start_distances') or {}
+        after_turn_distances = drive.get('start_distances') or {}
+        before_front = start_distances.get('front')
+        after_front = after_turn_distances.get('front')
+        yaw_deg = abs(float(turn.get('yaw_deg') or execution.get('theta_deg') or 0.0))
+        terms = {
+            'blocked_open_before_front_cm': before_front,
+            'blocked_open_after_front_cm': after_front,
+            'blocked_open_yaw_deg': yaw_deg,
+        }
+        if before_front is None or after_front is None:
+            return 0.0, terms
+        before_front = float(before_front)
+        after_front = float(after_front)
+        if before_front > self.args.blocked_open_before_cm:
+            return 0.0, terms
+        if yaw_deg < self.args.blocked_open_min_theta_deg:
+            return 0.0, terms
+        improvement = after_front - before_front
+        terms['blocked_open_improvement_cm'] = improvement
+        if improvement < self.args.blocked_open_min_improvement_cm:
+            return 0.0, terms
+        open_score = min(1.0, after_front / max(1e-6, self.args.blocked_open_scale_cm))
+        improvement_score = min(1.0, improvement / max(1e-6, self.args.blocked_open_scale_cm))
+        bonus = self.args.blocked_open_turn_bonus * max(open_score, improvement_score)
+        terms['blocked_open_score'] = max(open_score, improvement_score)
+        return float(bonus), terms
+
     def _slow_rlxf_reward(self, execution, backend, recovery):
         terms = self._executed_motion_terms(execution, recovery)
         novelty = float(backend.get('pcvm_mem_norm') or backend.get('predictive_novelty') or 0.0)
@@ -307,6 +343,7 @@ class RealPredictiveSACEnv(gym.Env):
             and terms['executed_distance_cm'] >= self.args.safe_motion_min_cm
         ) else 0.0
         distance_reward = self.args.executed_distance_weight * min(1.0, terms['executed_distance_cm'] / max(1e-6, self.args.max_distance_cm))
+        blocked_open_turn_bonus, blocked_open_terms = self._blocked_open_turn_bonus(execution)
 
         recent_revisit_penalty = 0.0
         if cluster_id is not None and not new_cluster:
@@ -327,7 +364,7 @@ class RealPredictiveSACEnv(gym.Env):
             zero_forward_penalty = self.args.zero_forward_penalty
         loop_penalty, loop_terms = self._loop_penalty(backend, terms)
 
-        reward += novelty_reward + new_cluster_bonus + surprise_reward + safe_motion_bonus + distance_reward
+        reward += novelty_reward + new_cluster_bonus + surprise_reward + safe_motion_bonus + distance_reward + blocked_open_turn_bonus
         reward -= (
             recent_revisit_penalty
             + near_obstacle_penalty
@@ -350,6 +387,7 @@ class RealPredictiveSACEnv(gym.Env):
             'surprise_reward': surprise_reward,
             'safe_motion_bonus': safe_motion_bonus,
             'executed_distance_reward': distance_reward,
+            'blocked_open_turn_bonus': blocked_open_turn_bonus,
             'recent_revisit_penalty': recent_revisit_penalty,
             'near_obstacle_raw': near_obstacle_raw,
             'near_obstacle_penalty': near_obstacle_penalty,
@@ -360,6 +398,7 @@ class RealPredictiveSACEnv(gym.Env):
             'zero_forward_penalty': zero_forward_penalty,
             'loop_penalty': loop_penalty,
             **loop_terms,
+            **blocked_open_terms,
             **terms,
         }
         return float(reward)
@@ -439,7 +478,7 @@ class RealPredictiveSACEnv(gym.Env):
             'action': [float(x) for x in action.reshape(-1)],
             'action_mode': self.args.action_mode,
             'action_contract': '[theta_norm]' if self.args.action_mode == 'theta_until_front' else '[theta_norm, distance_norm]',
-            'executed_action_for_pcvm': [float(executed_action[0]), float(executed_action[1])],
+            'executed_action_for_pcvm': [float(x) for x in executed_action.reshape(-1)],
             'target': target,
             'distances': distances,
             'backend': backend,
@@ -464,7 +503,7 @@ class RealPredictiveSACEnv(gym.Env):
     def _policy_action_to_pcvm_action(self, action):
         action = np.asarray(action, dtype=np.float32).reshape(-1)
         if self.args.action_mode == 'theta_until_front':
-            return np.array([clamp(float(action[0]), -1.0, 1.0), 1.0], dtype=np.float32)
+            return np.array([clamp(float(action[0]), -1.0, 1.0)], dtype=np.float32)
         return np.asarray(action[:2], dtype=np.float32)
 
     def _execution_feedback_to_pcvm_action(self, execution_feedback):
@@ -472,21 +511,15 @@ class RealPredictiveSACEnv(gym.Env):
             execution = execution_feedback.get('execution') if isinstance(execution_feedback, dict) else None
             recovery = execution_feedback.get('recovery') if isinstance(execution_feedback, dict) else None
             theta_deg = 0.0
-            distance_cm = 0.0
             if recovery:
                 reverse = recovery.get('reverse') or {}
-                if reverse:
-                    distance_cm -= max(0.0, float(reverse.get('requested_distance_cm') or 0.0))
                 report = recovery.get('recovery') or {}
                 theta_deg += float(report.get('yaw_deg') or 0.0)
             if execution:
                 turn = execution.get('turn') or {}
                 theta_deg += float(turn.get('yaw_deg') or execution.get('theta_deg') or 0.0)
-                drive = execution.get('drive') or {}
-                distance_cm += max(0.0, float(drive.get('estimated_distance_cm') or execution.get('clipped_distance_cm') or 0.0))
             theta_norm = clamp(theta_deg / max(1e-6, self.args.max_theta_deg), -1.0, 1.0)
-            dist_norm = 1.0 if distance_cm >= self.args.motion_gate_cm else -1.0
-            return np.array([theta_norm, dist_norm], dtype=np.float32)
+            return np.array([theta_norm], dtype=np.float32)
         return execution_feedback_to_action(
             execution_feedback, self.args.max_theta_deg, self.args.max_distance_cm, self.args.min_distance_cm
         )
@@ -555,6 +588,11 @@ def parse_args():
     parser.add_argument('--loop-long-move-scale', type=float, default=0.45)
     parser.add_argument('--recovery-streak-window', type=int, default=8)
     parser.add_argument('--recovery-streak-penalty', type=float, default=0.10)
+    parser.add_argument('--blocked-open-turn-bonus', type=float, default=0.0)
+    parser.add_argument('--blocked-open-before-cm', type=float, default=55.0)
+    parser.add_argument('--blocked-open-min-theta-deg', type=float, default=25.0)
+    parser.add_argument('--blocked-open-min-improvement-cm', type=float, default=20.0)
+    parser.add_argument('--blocked-open-scale-cm', type=float, default=120.0)
     parser.add_argument('--viz-port', type=int, default=0)
     parser.add_argument('--viz-depth-model', default='depth-anything/Depth-Anything-V2-Small-hf')
     return parser.parse_args()

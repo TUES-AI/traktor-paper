@@ -21,6 +21,15 @@ class SafetyConfig:
     stuck_check_seconds: float = 0.8
     stuck_min_yaw_change_deg: float = 2.0
     stuck_min_accel_delta_g: float = 0.025
+    forward_contact_enabled: bool = True
+    forward_contact_grace_seconds: float = 0.45
+    forward_contact_window_seconds: float = 0.45
+    forward_contact_min_accel_delta_g: float = 0.018
+    forward_contact_min_abs_yaw_deg: float = 1.0
+    forward_contact_baseline_alpha: float = 0.08
+    forward_contact_min_baseline_score: float = 0.025
+    forward_contact_stall_ratio: float = 0.45
+    forward_contact_reverse_cm: float = 25.0
     ultrasonic_timeout_seconds: float = 0.03
     no_echo_is_clear: bool = True
 
@@ -31,6 +40,7 @@ class SafetyController:
         self.imu = imu
         self.config = config or SafetyConfig()
         self._gyro_z_bias = 0.0
+        self._forward_motion_baseline = None
 
     def close(self):
         self.rover.stop_motors()
@@ -110,6 +120,112 @@ class SafetyController:
             'requested_distance_cm': distance_cm,
             'seconds': seconds,
             'speed_pct': self.config.reverse_recovery_speed,
+        }
+
+    def begin_forward_contact_monitor(self):
+        """Create state for detecting forward contact/stall during a drive.
+
+        This stays in the safety layer. It is intentionally not a SAC input or
+        auxiliary loss. The detector is conservative and uses IMU motion/vibration
+        while a forward motor command is active; if it fires, the caller should
+        stop forward motion and run reverse recovery before asking the planner for
+        the next action.
+        """
+        return {
+            'enabled': bool(self.config.forward_contact_enabled and self.imu is not None),
+            'start': time.monotonic(),
+            'last': time.monotonic(),
+            'window_start': None,
+            'yaw_deg': 0.0,
+            'accel_min': None,
+            'accel_max': None,
+            'samples': 0,
+        }
+
+    def update_forward_contact_monitor(self, monitor):
+        if not monitor or not monitor.get('enabled'):
+            return None
+        now = time.monotonic()
+        elapsed = now - monitor['start']
+        if elapsed < self.config.forward_contact_grace_seconds:
+            monitor['last'] = now
+            return None
+
+        if monitor.get('window_start') is None:
+            monitor['window_start'] = now
+            monitor['yaw_deg'] = 0.0
+            monitor['accel_min'] = None
+            monitor['accel_max'] = None
+            monitor['samples'] = 0
+
+        d = self.imu.read_all()
+        dt = max(1e-3, now - monitor['last'])
+        monitor['last'] = now
+        gyro_z = d['gyro']['z'] - self._gyro_z_bias
+        monitor['yaw_deg'] += gyro_z * dt
+        a = d['accel']
+        accel_norm = math.sqrt(a['x'] ** 2 + a['y'] ** 2 + a['z'] ** 2)
+        monitor['accel_min'] = accel_norm if monitor['accel_min'] is None else min(monitor['accel_min'], accel_norm)
+        monitor['accel_max'] = accel_norm if monitor['accel_max'] is None else max(monitor['accel_max'], accel_norm)
+        monitor['samples'] += 1
+
+        window_elapsed = now - monitor['window_start']
+        if window_elapsed < self.config.forward_contact_window_seconds:
+            return None
+
+        accel_delta = (monitor['accel_max'] or 0.0) - (monitor['accel_min'] or 0.0)
+        abs_yaw = abs(float(monitor['yaw_deg']))
+        motion_score = accel_delta + 0.002 * abs_yaw
+        baseline = self._forward_motion_baseline
+        absolute_stall = accel_delta < self.config.forward_contact_min_accel_delta_g and abs_yaw < self.config.forward_contact_min_abs_yaw_deg
+        adaptive_stall = False
+        if baseline is not None and baseline >= self.config.forward_contact_min_baseline_score:
+            adaptive_stall = motion_score < baseline * self.config.forward_contact_stall_ratio
+        stall = monitor['samples'] >= 3 and (absolute_stall or adaptive_stall)
+        report = {
+            'contact_or_stall': bool(stall),
+            'stall_score': 1.0 if stall else 0.0,
+            'motion_score': motion_score,
+            'free_motion_baseline': baseline,
+            'adaptive_stall_ratio': None if baseline is None else motion_score / max(1e-9, baseline),
+            'accel_delta_g': accel_delta,
+            'yaw_deg': monitor['yaw_deg'],
+            'samples': monitor['samples'],
+            'window_seconds': window_elapsed,
+            'grace_seconds': self.config.forward_contact_grace_seconds,
+            'reason': 'low_imu_motion_while_forward' if stall else 'imu_motion_ok',
+        }
+        if stall:
+            return report
+
+        # Clean forward windows update the free-motion baseline. This is a
+        # safety-layer estimate only: it is not exposed to SAC. A later wall push
+        # is considered suspicious when its motion score is far below this moving
+        # baseline, even if the rover still jitters a little.
+        if motion_score >= self.config.forward_contact_min_baseline_score:
+            if self._forward_motion_baseline is None:
+                self._forward_motion_baseline = motion_score
+            else:
+                a = self.config.forward_contact_baseline_alpha
+                self._forward_motion_baseline = (1.0 - a) * self._forward_motion_baseline + a * motion_score
+
+        monitor['window_start'] = now
+        monitor['yaw_deg'] = 0.0
+        monitor['accel_min'] = None
+        monitor['accel_max'] = None
+        monitor['samples'] = 0
+        return None
+
+    def forward_contact_recovery(self, monitor_report=None, distance_cm=None):
+        self.rover.stop_motors()
+        report = dict(monitor_report or {})
+        reverse = self.reverse_recovery(
+            self.config.forward_contact_reverse_cm if distance_cm is None else distance_cm
+        )
+        return {
+            **report,
+            'reason': 'contact_or_stall_reverse_recovery',
+            'reverse': reverse,
         }
 
     def reverse_if_too_close(self, speed_pct, distances=None):
