@@ -1,47 +1,34 @@
-%%%%%%%% ICML 2026 EXAMPLE LATEX SUBMISSION FILE %%%%%%%%%%%%%%%%%
+%%%%%%%% ICML 2025-STYLE WORKSHOP DRAFT %%%%%%%%%%%%%%%%%
 
 \documentclass{article}
 
-% Recommended, but optional, packages for figures and better typesetting:
 \usepackage{microtype}
 \usepackage{graphicx}
-\usepackage{subcaption}
-\usepackage{booktabs} % for professional tables
+\usepackage{subfigure}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{adjustbox}
+\usepackage{float}
+\usepackage{fancyvrb}
 \usepackage{stfloats}
+\usepackage{cuted}
+\usepackage{placeins}
 \usepackage{tikz}
-\usetikzlibrary{arrows.meta,positioning}
-
-% hyperref makes hyperlinks in the resulting PDF.
-% If your build breaks (sometimes temporarily if a hyperlink spans a page)
-% please comment out the following usepackage line and replace
-% \usepackage{icml2026} with \usepackage[nohyperref]{icml2026} above.
+\usetikzlibrary{arrows.meta,positioning,calc}
+\usepackage{xcolor}
 \usepackage{hyperref}
 
-
-% Attempt to make hyperref and algorithmic work together better:
 \newcommand{\theHalgorithm}{\arabic{algorithm}}
 
-% Use the following line for the initial blind version submitted for review:
-\usepackage{icml2026}
-
-% For preprint, use
-% \usepackage[preprint]{icml2026}
-
-% If accepted, instead use the following line for the camera-ready submission:
-% \usepackage[accepted]{icml2026}
+\usepackage[accepted]{icml2025}
 
 \usepackage{amsmath}
 \usepackage{amssymb}
 \usepackage{mathtools}
 \usepackage{amsthm}
+\usepackage[capitalize,noabbrev]{cleveref}
 
-
-% if you use cleveref..
-% \usepackage[capitalize,noabbrev]{cleveref}
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% THEOREMS
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \theoremstyle{plain}
 \newtheorem{theorem}{Theorem}[section]
 \newtheorem{proposition}[theorem]{Proposition}
@@ -53,271 +40,232 @@
 \theoremstyle{remark}
 \newtheorem{remark}[theorem]{Remark}
 
-% Todonotes is useful during development; simply uncomment the next line
-%    and comment out the line below the next line to turn off comments
-% \usepackage[disable,textsize=tiny]{todonotes}
-% \usepackage[textsize=tiny]{todonotes}
-
-% The \icmltitle you define below is probably too long as a header.
-% Therefore, a short form for the running title is supplied here:
 \icmltitlerunning{Grounded Exploration from Onboard World Feedback}
 
 \begin{document}
 
 \twocolumn[
-  \icmltitle{Grounded Exploration: Decoupled Planning and Terrain-Adaptive Execution from Onboard World Feedback}
+\icmltitle{Grounded Exploration: Decoupled Planning and Terrain-Adaptive Execution from Onboard World Feedback}
 
-  % It is OKAY to include author information, even for blind submissions: the
-  % style file will automatically remove it for you unless you've provided
-  % the [accepted] option to the icml2026 package.
+\icmlsetsymbol{equal}{*}
 
-  % List of affiliations: The first argument should be a (short) identifier you
-  % will use later to specify author affiliations Academic affiliations
-  % should list Department, University, City, Region, Country Industry
-  % affiliations should list Company, City, Region, Country
+\begin{icmlauthorlist}
+\icmlauthor{Anonymous Authors}{anon}
+\end{icmlauthorlist}
 
-  % You can specify symbols, otherwise they are numbered in order. Ideally, you
-  % should not use this facility. Affiliations will be numbered in order of
-  % appearance and this is the preferred way.
-  \icmlsetsymbol{equal}{*}
+\icmlaffiliation{anon}{Anonymous Institution}
+\icmlcorrespondingauthor{Anonymous Authors}{anonymous@example.com}
+\icmlkeywords{reinforcement learning from world feedback, mapless exploration, mobile robotics, intrinsic motivation}
 
-  \begin{icmlauthorlist}
-    \icmlauthor{Firstname1 Lastname1}{equal,yyy}
-    \icmlauthor{Firstname2 Lastname2}{equal,yyy,comp}
-    \icmlauthor{Firstname3 Lastname3}{comp}
-    \icmlauthor{Firstname4 Lastname4}{sch}
-    \icmlauthor{Firstname5 Lastname5}{yyy}
-    \icmlauthor{Firstname6 Lastname6}{sch,yyy,comp}
-    \icmlauthor{Firstname7 Lastname7}{comp}
-    %\icmlauthor{}{sch}
-    \icmlauthor{Firstname8 Lastname8}{sch}
-    \icmlauthor{Firstname8 Lastname8}{yyy,comp}
-    %\icmlauthor{}{sch}
-    %\icmlauthor{}{sch}
-  \end{icmlauthorlist}
-
-  \icmlaffiliation{yyy}{Department of XXX, University of YYY, Location, Country}
-  \icmlaffiliation{comp}{Company Name, Location, Country}
-  \icmlaffiliation{sch}{School of ZZZ, Institute of WWW, Location, Country}
-
-  \icmlcorrespondingauthor{Firstname1 Lastname1}{first1.last1@xxx.edu}
-  \icmlcorrespondingauthor{Firstname2 Lastname2}{first2.last2@www.uk}
-
-  % You may provide any keywords that you find helpful for describing your
-  % paper; these are used to populate the "keywords" metadata in the PDF but
-  % will not be shown in the document
-  \icmlkeywords{reinforcement learning from world feedback, mapless exploration, mobile robotics, intrinsic motivation}
-
-  \vskip 0.15in
-
-  \begin{center}
-  \begin{minipage}{0.92\textwidth}
-  \begin{abstract}
-  Classical deterministic planners fail in unstructured real-world environments where maps and external instrumentation are unavailable. We present a real-world reinforcement learning pipeline for a physical rover that learns to explore using world feedback alone. Intrinsic reward is derived from a Vision Memory Model that scores how novel each new scene is using Random Network Distillation on live camera frames. We deploy and train directly on hardware with a safety layer constraining motor commands, and propose novel places found --- the number of visually distinct scenes accumulated during an evaluation episode --- as a practical, instrumentation-free exploration metric.
-  \end{abstract}
-  \end{minipage}
-
-  \vskip 0.08in
-  \resizebox{0.96\textwidth}{!}{\includegraphics{data/hero_placeholder/figures/hero_placeholder.jpg}}
-  \refstepcounter{figure}\label{fig:hero-placeholder}
-  {\small \textbf{Figure~\thefigure: Placeholder --- get better images of this.} Real-rover RLxF exploration overview: physical platform, apartment-scale trajectory, and world-feedback reward traces. This temporary teaser sets the intended first-page feel before final photography and plotting.}
-  \end{center}
-
-  \vskip 0.15in
+\vskip 0.3in
 ]
 
-% this must go after the closing bracket ] following \twocolumn[ ...
+\printAffiliationsAndNotice{}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[C]{\small\itshape Grounded Exploration from Onboard World Feedback}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
 
-% This command actually creates the footnote in the first column listing the
-% affiliations and the copyright notice. The command takes one argument, which
-% is text to display at the start of the footnote. The \icmlEqualContribution
-% command is standard text for equal contribution. Remove it (just {}) if you
-% do not need this facility.
+\begin{abstract}
+We study mapless real-world exploration from onboard world feedback. The target setting is a small rover in unknown and changing environments where external maps, privileged state, and simulator initialization are unavailable, and where the policy must be initialized and improved directly on hardware. Our current system decouples planning from execution: a policy selects a relative heading, a terrain-adaptive executor realizes motion, a Predictive Contextual Visual Memory (PCVM) backend supplies novelty, and the reward combines novelty with executed motion, coverage expansion, and penalties for zero-progress and revisits. Preliminary indoor runs already support multi-region exploration, while also exposing the present limitations: weak visual place discrimination, reward terms that still require calibration, and sensitivity to low-cost sensing. The working hypothesis for the final paper is that stronger visual representations and better reward alignment will shift the system from motion-dominated exploration toward genuinely visual novelty-seeking behavior.
+\end{abstract}
 
-% Use ONE of the following lines. DO NOT remove the command.
-% If you have no special notice, KEEP empty braces:
-\printAffiliationsAndNotice{}  % no special notice (required even if empty)
-% Or, if applicable, use the standard equal contribution text:
-% \printAffiliationsAndNotice{\icmlEqualContribution}
+\section{Introduction \& Background}
 
-\section{Introduction}
-Autonomous exploration is usually framed as mapping: estimate free space, detect frontiers, and plan to informative boundaries \citep{yamauchi1997frontier,thrun2005probabilistic}. This assumption is brittle on small low-cost robots with only monocular vision, short-range sensors, and noisy inertial measurements. In damaged buildings or rubble, the map may also change while the robot is operating.
+Autonomous exploration is often framed as mapping: estimate free space, detect frontiers, and plan to informative boundaries \citep{yamauchi1997frontier,thrun2005probabilistic}. That framing weakens for small robots in damaged buildings, cluttered interiors, outdoor paths, or rubble, where sensing is weak, traversability changes over time, and the policy may need to start from random initialization on the real platform itself. We therefore study \emph{mapless exploration from world feedback}: the robot improves online from the consequences reported by its own sensors and execution stack.
 
-We study \emph{mapless exploration from world feedback}. A physical rover learns online without external instrumentation, pre-built maps, or simulator pretraining. After each action, the only feedback is onboard: camera frames, range sensors, inertial response, executed motion, and recovery events. The environment supplies consequences; the designer specifies how to turn them into reward.
+\begin{figure}[!h]
+    \centering
+    \includegraphics[width=0.92\linewidth]{data/hero_placeholder/raw/final_run_map.jpg}
+    \caption{Placeholder first figure. Current best real run: corridor $\rightarrow$ room $\rightarrow$ similar second corridor $\rightarrow$ second room. Replace with a cleaned apartment map/trajectory figure.}
+    \label{fig:first-map}
+\end{figure}
 
-The central hypothesis is that learning should decide \emph{where to try next}, not raw motor PWM. A deterministic executor realizes the command near obstacles. Our strongest current abstraction is a relative heading followed by forward motion until the world, via front-range feedback, says to stop.
+The core hypothesis is that useful exploration does not require learning motor PWM. The policy should decide \emph{where to try next}; a deterministic executor should decide how to realize that intent under uncertain terrain, actuator limits, and near-obstacle operation. This separation matters on hardware because raw motor RL entangles exploration credit assignment with contact handling, wheel slip, and low-level safety. Our current policy therefore outputs a scalar relative heading, and the executor drives forward until the front range sensor or safety layer terminates the action.
 
-Intrinsic motivation is a natural reward source \citep{pathak2017curiosity,burda2019rnd,savinov2019episodic}, but real hardware exposes failure modes hidden in simulation: blur can look novel, wall contact can produce new pixels, and corridor loops can collect reward. We therefore gate novelty by executed motion and log penalties for recovery, zero-progress, and revisits.
+Intrinsic motivation is a natural reward source \citep{pathak2017curiosity,burda2019rnd,savinov2019episodic}, but real robots expose failure modes that are easy to hide in simulation: blur can look novel, wall contact can create new pixels, and loops can accumulate reward without discovering meaningfully new places. We therefore gate novelty by executed motion, add coverage-expansion terms, and log every reward component so runs can be audited against video. Saved human and autonomous trajectories are used for analysis and reward debugging only, not for supervised policy pretraining. At present, the strongest part of the system is the grounded interface between heading selection, terrain-adaptive execution, and auditable reward; the longer-term target is to make stronger visual encoders and memory design materially influence action choice rather than leaving exploration dominated by proprioceptive and geometric proxies.
 
-This is an in-progress real-rover RLxF report. The policy is trained on hardware; saved trajectories are for auditing and ablations, not supervised pretraining. Evaluation uses quantities available to the robot and reviewer: successful motion, novel places, recovery frequency, and qualitative apartment coverage.
+\section{Methods}
 
-Our contribution is a minimal real-world benchmark and prototype stack: onboard RL, intrinsic visual memory, safety-gated local actions, and auditable world-feedback rewards.
+At time $t$, the rover receives $o_t=(I_t,d_t,m_t,a_{t-1},e_{t-1})$: camera image, range readings, inertial/proprioceptive state, previous high-level action, and executor feedback. The policy selects $a_t\in[-1,1]$, interpreted as a relative heading $\theta_t=75^\circ a_t$. The executor turns by $\theta_t$ and drives until the front threshold, max duration, or safety recovery stops the action. Dead-reckoned pose is logged only as a diagnostic, not treated as ground truth.
 
-\section{Methodology}
-
-\begin{figure}[t]
+\begin{figure}[!h]
   \centering
+  \resizebox{0.98\linewidth}{!}{%
   \begin{tikzpicture}[
     font=\scriptsize,
-    box/.style={draw, rounded corners, align=center, minimum height=0.34in, minimum width=0.68in},
-    arrow/.style={-Latex, thick}
+    box/.style={draw, rounded corners, align=center, minimum height=0.32in, minimum width=0.65in},
+    arrow/.style={-Latex, thick, shorten >=-1pt, shorten <=-1pt}
   ]
     \node[box] (obs) {camera\\range\\IMU};
-    \node[box, right=0.12in of obs] (pcvm) {PCVM\\novelty};
-    \node[box, right=0.12in of pcvm] (sac) {SAC\\planner};
-    \node[box, below=0.14in of sac] (exec) {executor};
-    \node[box, left=0.12in of exec] (safety) {safety\\recovery};
-    \node[box, left=0.12in of safety] (world) {world\\feedback};
+    \node[box, right=0.16in of obs] (pcvm) {PCVM\\novelty};
+    \node[box, right=0.16in of pcvm] (sac) {SAC\\planner};
+    \node[box, below=0.18in of sac] (exec) {executor};
+    \node[box, left=0.16in of exec] (safety) {safety\\recovery};
+    \node[box, left=0.16in of safety] (world) {world\\feedback};
     \draw[arrow] (obs) -- (pcvm);
     \draw[arrow] (pcvm) -- (sac);
     \draw[arrow] (sac) -- node[right]{heading} (exec);
     \draw[arrow] (exec) -- (safety);
     \draw[arrow] (safety) -- (world);
-    \draw[arrow] (world) -- node[left]{executed motion} (obs);
-  \end{tikzpicture}
-  \caption{Current decoupled architecture. The Predictive Contextual Visual Memory (PCVM) module supplies novelty; SAC chooses a relative heading; the executor and safety layer determine what actually happens and return world feedback.}
-  \label{fig:architecture-placeholder}
+    \draw[arrow] (world) -- node[left]{executed} (obs);
+  \end{tikzpicture}}
+  \caption{Current decoupled architecture. PCVM supplies novelty, SAC chooses heading, and executor/safety modules return grounded world feedback.}
+  \label{fig:architecture}
 \end{figure}
 
-\subsection{Problem setting}
-
-At time $t$ the rover receives
+We call the current memory backend \emph{Predictive Contextual Visual Memory} (PCVM). PCVM maps the frame and action context to an embedding $z_t$ and stores representative embeddings. Novelty is computed from a weighted combination of memory distance and Random Network Distillation (RND; \citealp{burda2019rnd}), where RND compares a learned predictor against a fixed target network:
 \begin{equation}
-o_t = (I_t, d_t, m_t, a_{t-1}, e_{t-1}),
+n_t = \alpha\,\mathrm{dist}(z_t,\mathcal{M}_{t-1}) + \beta\,\|f_{\mathrm{pred}}(I_t)-f_{\mathrm{target}}(I_t)\|_2^2 .
 \end{equation}
-where $I_t$ is the camera image, $d_t$ range, $m_t$ inertial/proprioceptive state, $a_{t-1}$ the previous high-level action, and $e_{t-1}$ what the executor actually achieved. The policy selects a local guide $a_t$, not motor commands; the executor applies safety constraints and returns world feedback.
+The final encoder is not fixed; we have tested lightweight CNNs, recurrent path-conditioned memory, and frozen backbones.
 
-The goal is exploration under a fixed step budget, without a metric map or ground-truth pose. Dead-reckoned pose is only diagnostic.
+\begin{figure}[!h]
+  \centering
+  \vspace{-0.03in}
+  \begin{tikzpicture}[
+    font=\tiny,
+    box/.style={draw, rounded corners, align=center, inner sep=2pt, minimum width=0.70in},
+    head/.style={draw, rounded corners, align=center, fill=gray!10, inner sep=2pt, minimum width=0.68in},
+    arrow/.style={-Latex, thick}
+  ]
+    \node[head] (rgb_in) {input};
+    \node[head, right=0.18in of rgb_in] (prop_in) {input};
+    \node[box, below=0.00in of rgb_in] (rgb) {RGB\\$96{\times}64$};
+    \node[box, below=0.00in of prop_in] (prop) {range/yaw\\pose/action};
+    \node[head, below=0.11in of rgb] (cnn_enc) {encoder};
+    \node[head, below=0.11in of prop] (mlp_enc) {encoder};
+    \node[box, below=0.00in of cnn_enc] (cnn) {CNN\\C5/32, C3/64\\C3/128, C3/128\\pool+FC};
+    \node[box, below=0.00in of mlp_enc] (mlp) {MLP\\$(8{+}|a|)$\\$\to128\to128$};
+    \coordinate (encbottom) at ($(cnn.south)!0.5!(mlp.south)$);
+    % Important layout note: the GRU is anchored below the *bottom edge* of the
+    % CNN/MLP boxes, not below their center/midpoint. If the arrows look glued
+    % to the GRU, increase the next `below=...` value. Do not increase global
+    % figure spacing or move the whole figure; the desired fix is internal
+    % padding between the encoder boxes and the GRU box.
+    \node[box, below=0.12in of encbottom] (gru) {GRUCell\\visual+proprio $\to h_t$};
+    \node[head, below=0.055in of gru] (z) {FC + normalize\\$z_t\in\mathbb{R}^{128}$};
+    \node[head, below left=0.08in and 0.00in of z] (mem) {path/visual\\memory};
+    \node[head, below=0.22in of z] (rnd) {RND\\target/pred};
+    \node[head, below right=0.08in and 0.00in of z] (aux) {transition\\+ inverse};
+    \draw[arrow] (rgb) -- (cnn_enc);
+    \draw[arrow] (prop) -- (mlp_enc);
+    \draw[arrow] (cnn) -- (gru);
+    \draw[arrow] (mlp) -- (gru);
+    \draw[arrow] (gru) -- (z);
+    \draw[arrow] (z) -- (mem);
+    \draw[arrow] (z) -- (rnd);
+    \draw[arrow] (z) -- (aux);
+  \end{tikzpicture}
+  \vspace{-0.06in}
+  \caption{PCVM module: visual and proprioceptive features feed a recurrent latent with memory, RND, transition, and inverse-action heads.}
+  \label{fig:pcvm-module}
+\end{figure}
 
-\subsection{Local action abstraction}
-
-The current action is a scalar relative heading
-\begin{equation}
-a_t \in [-1,1], \qquad \theta_t = \theta_{\max} a_t,
-\end{equation}
-with $\theta_{\max}=75^\circ$. The executor turns by $\theta_t$, then drives until the front sensor reaches a threshold or a max duration expires. This local, egocentric interface avoids global localization and discourages tiny dithering moves.
-
-Other guides, such as short $(\theta,\rho)$ targets, fit the same framework. The key separation is intent from execution.
-
-\subsection{Onboard novelty memory}
-
-We call the current memory backend \emph{Predictive Contextual Visual Memory} (PCVM). It maps the frame and action context to $z_t$ and stores representative embeddings. Novelty is nearest-memory distance and/or RND-style prediction error \citep{burda2019rnd}:
-\begin{equation}
-n_t = \alpha \, \mathrm{dist}(z_t, \mathcal{M}_{t-1}) + \beta \, \|f_{\mathrm{pred}}(I_t)-f_{\mathrm{target}}(I_t)\|_2^2,
-\end{equation}
-where $\mathcal{M}_{t-1}$ is memory and $f_{\mathrm{target}}$ is fixed. Distant embeddings create or update memory representatives.
-
-The final encoder is not fixed; we have tested lightweight CNNs, recurrent path-conditioned memory, and frozen backbones. The framework only requires onboard novelty estimates.
-
-\subsection{World-feedback reward}
-
-Novelty alone is insufficient: the robot can see new pixels while stuck. Reward combines perceptual novelty with execution feedback:
+Reward combines perceptual novelty with execution feedback:
 \begin{align}
 r_t ={}& r_t^{+} - r_t^{-}, \\
-r_t^{+} ={}& w_n\,\mathbb{1}[M_t] n_t
-       + w_c C_t
-       + w_d \Delta s_t
-       + w_s S_t, \\
-r_t^{-} ={}& \lambda_r R_t
-       + \lambda_0 Z_t
-       + \lambda_l L_t
-       + \lambda_o O_t .
+r_t^{+} ={}& w_n\mathbb{1}[M_t]n_t + w_cC_t + w_d\Delta s_t + w_sS_t, \\
+r_t^{-} ={}& \lambda_rR_t + \lambda_0Z_t + \lambda_lL_t + \lambda_oO_t .
 \end{align}
-Here $M_t$ gates novelty by motion, $C_t$ denotes cluster/coverage expansion, $S_t$ safe motion, $\Delta s_t$ executed distance, and $R_t,Z_t,L_t,O_t$ recovery, zero-forward, revisit, and obstacle penalties.
+Here $M_t$ gates novelty by motion, $C_t$ denotes cluster/coverage expansion, $\Delta s_t$ executed distance, and $R_t,Z_t,L_t,O_t$ recovery, zero-forward, revisit, and obstacle penalties. We currently use SAC \citep{haarnoja2018sac}, with replay populated online from rover experience.
 
-Each term is logged separately, so scalar reward can be audited against video. This exposed early over-rewarding of corridor loops and motivated loop-aware penalties.
-
-\subsection{Training and data usage}
-
-We currently use SAC \citep{haarnoja2018sac}. Replay is populated online from rover experience. Safety can clip execution, and the policy receives the executed-action feedback.
-
-Saved manual/autonomous runs are used only for reward auditing, memory diagnostics, and figures, not policy pretraining.
-
-\subsection{Evaluation protocol}
-
-Evaluation uses short autonomous episodes with successful-forward fraction, recoveries, zero-progress, dead-reckoned spread, and frame review. Frozen runs serve as reward-alignment diagnostics.
-
-\section{Preliminary Real-Rover Experiments}
-
-\paragraph{Use case framing.}
-The motivating deployment is an unknown and changing indoor structure, e.g. a small rescue rover entering damaged buildings or rubble. The robot cannot rely on a precomputed map, but it can evaluate the consequences of its actions through onboard feedback.
-
-\paragraph{Representative run.}
-Figure~\ref{fig:hero-placeholder} includes reward and trajectory panels from a 100-step continuation run. The human-observed sequence was corridor $\rightarrow$ room $\rightarrow$ visually similar second corridor $\rightarrow$ second room. The third segment receives less novelty, plausibly because the apartment has an X-shaped corridor geometry with overlapping views. This is qualitative until repeated runs and ablations are complete.
-
-\begin{figure}[t]
+\begin{figure}[!h]
   \centering
-  \includegraphics[width=0.48\textwidth]{data/hero_placeholder/raw/final_run_map.jpg}
-  \caption{Placeholder apartment/run map. This half-column figure is only for layout exploration; replace with a cleaned schematic or manually annotated map before submission.}
-  \label{fig:placeholder-apartment-map}
+  \includegraphics[width=0.98\linewidth]{data/pcvm_theta_front_coverage_resume100_from150/figures/reward_term_abs_contrib.png}
+  \caption{Absolute reward-term contributions in the representative 100-step run. This diagnostic shows which terms dominate the scalar objective and motivates reward-term ablations beyond hardware/executor ablations.}
+  \label{fig:reward-term-contrib}
+  \vspace{0.03in}
+
+  {\colorbox{yellow!25}{\parbox{0.94\linewidth}{\footnotesize\textbf{Temporary note, delete later.} Layer two or three of these contribution charts from early/mid training and one from a later $5{+}$ epoch continuation to see whether the dominant reward terms change order as the policy improves.}}}
 \end{figure}
 
-The run scored $+31.5$ over 100 actions, traveled $20.3\,$m, reached $5.7\,$m net displacement, and expanded the dead-reckoned box to $22.3\,\mathrm{m}^2$. It still had two contact/stall events and many recoveries, so the controller is not solved; the result only suggests that the action/reward interface can produce room-to-room exploration.
+\clearpage
+\section{Preliminary Real-Rover Experiments}
 
+The motivating deployment is an unknown and changing structure, such as a small rescue rover entering a damaged building. The robot cannot rely on a precomputed map, but it can continuously evaluate the consequences of its actions through onboard feedback. The experiments reported here happen indoors because that is our current controllable testbed, not because the formulation is specific to apartment rooms. In the representative run shown in \cref{fig:first-map}, the current theta-front policy produced the sequence corridor $\rightarrow$ room $\rightarrow$ visually similar second corridor $\rightarrow$ second room.
+
+The representative 100-step continuation run scored $+31.5$, traveled $20.3\,$m, reached $5.7\,$m net displacement, and expanded the dead-reckoned bounding box to $22.3\,\mathrm{m}^2$. The same run also contained two contact/stall events and many recoveries. The result is therefore best read as a proof of usable multi-region traversal under weak sensing, not as a finished navigation system.
+
+\begin{strip}
+\centering
+\includegraphics[width=0.86\textwidth]{data/pcvm_theta_front_coverage_resume100_from150/figures/reward_manual_trace_pair.png}
+\refstepcounter{figure}\label{fig:reward-trajectory-pair}
+
+\vspace{-0.06in}
+{\footnotesize \textbf{Figure~\thefigure.} Placeholder reward trace and hand-traced qualitative path from the latest good real-rover run. The right panel is colored by average reward stretched over the drawn path segments and should be replaced with a cleaner map/trajectory from a stronger repeated run before final submission.}
+\end{strip}
+% TODO before final submission: replace the hand-drawn right panel in
+% Figure~\ref{fig:reward-trajectory-pair} with a trajectory/map visualization
+% from an even stronger repeated run. Keep tools/create_manual_reward_trajectory.py
+% because this reward-colored path style is useful for the final paper.
+
+\FloatBarrier
+\vspace*{2.8in}
 \clearpage
 
 \begin{table*}[!t]
   \centering
-  \caption{Placeholder ablation and benchmark matrix. Empty cells mark measurements to fill after repeated runs.}
-  \label{tab:placeholder-benchmarks}
   \small
-  \resizebox{\textwidth}{!}{%
+  \resizebox{0.96\textwidth}{!}{%
   \begin{tabular}{lcccccc}
     \toprule
-    System / ablation & Rooms & Travel & Contacts & Reward & Notes & Status \\
+    Memory / reward ablation & Return $\uparrow$ & Travel $\uparrow$ & BBox $\uparrow$ & Visual novelty $\uparrow$ & Zero-prog. $\downarrow$ & Status \\
     \midrule
-    Short local target PCVM &  &  &  &  &  & old baseline \\
-    Theta-front PCVM &  &  &  &  &  & current baseline \\
-    Theta-front + coverage reward &  &  &  &  &  & current run \\
-    No surprise term &  &  &  &  &  & planned \\
-    Executed-action memory &  &  &  &  &  & planned \\
-    Human WASD reference &  &  &  &  &  & reference \\
+    Path memory only &  &  &  &  &  & planned \\
+    Visual memory only &  &  &  &  &  & planned \\
+    Path + visual memory &  &  &  &  &  & current \\
+    Path + visual + surprise &  &  &  &  &  & planned \\
+    + coverage/open-turn reward &  &  &  &  &  & current \\
+    Full Grounded Exploration stack &  &  &  &  &  & current \\
+    Full stack + stronger vision encoder &  &  &  &  &  & planned \\
+    Perfect Human Reference &  &  &  &  &  & ceiling \\
     \bottomrule
   \end{tabular}}
+  \caption{Planned ablation ladder and objective evaluation metrics. Empty cells mark repeated-run measurements to fill in later.}
+  \label{tab:placeholder-benchmarks}
+  \vspace{0.03in}
+
+  {\colorbox{yellow!25}{\parbox{0.94\textwidth}{\footnotesize\textbf{Temporary note, delete later.} This table should test whether exploration comes from path/proprioceptive memory, visual memory, or their combination. The key question is whether visual novelty starts contributing once stronger encoders are used. Columns are objective run metrics: scalar return, estimated travel, dead-reckoned bounding-box area, visual novelty/cluster contribution, and zero-progress/already-blocked steps. Perfect Human Reference is the effortful manual ceiling, not a learned model.}}}
 \end{table*}
 
 \section{Ablations}
 
-\paragraph{Draft notes from current rover runs.}
 Current evidence points first to action interface: short local targets produced timid motion, while relative-heading plus world-bounded execution reached multiple rooms. This motivates a fixed-distance target vs. drive-until-front ablation. A second ablation is requested-action memory vs. executed-action memory, because safety clipping and recovery change what physically happened. A third is surprise on/off: transition error may capture useful unmodeled outcomes, but may also reward blur, noise, or collision artifacts.
 
-\paragraph{Reward-alignment drafts.}
-The coverage reward was introduced after visual review showed that a two-room run scored lower than a corridor loop. Future ablations should rank frozen runs by human labels: corridor loop $<$ corridor+one-room $<$ corridor+two-room. This allows reward tuning before spending hardware time.
+The coverage reward was introduced after visual review showed that a two-room run scored lower than a corridor loop. Future ablations should rank frozen runs by human labels: corridor loop $<$ corridor+one-room $<$ corridor+two-room. Architecturally, the PCVM module still aliases similar rooms/corridors, so we plan to compare lightweight CNN features, pretrained encoders, and dual path/visual memory while keeping the same executor.
 
-\paragraph{Architecture drafts.}
-The current PCVM module still aliases similar rooms/corridors. We plan to compare lightweight CNN features, frozen pretrained encoders, and dual path/visual memory while keeping the same theta-front executor.
+\begin{table}[!h]
+  \centering
+  \caption{Placeholder vision-backbone ablation.}
+  \label{tab:vision-backbones}
+  \scriptsize
+  \begin{tabular}{lll}
+    \toprule
+    Visual encoder & Signal to test & Status \\
+    \midrule
+    Tiny PCVM CNN & current weak baseline & current \\
+    MobileNet & cheap pretrained features & planned \\
+    DINO-style encoder & semantic view similarity & planned \\
+    CLIP & language-aligned scene features & planned \\
+    V-JEPA & predictive world features & planned \\
+    Wall-trained CNN & task-specific local texture & planned \\
+    \bottomrule
+  \end{tabular}
+\end{table}
 
-\section{Conclusion \& Future Work}
+\section{Discussion}
 
-This draft supports a narrow claim: decoupled planning and terrain-adaptive execution can produce useful real-rover exploration from onboard world feedback. Future work is safety-aware reward, separate sensor/safety monitors for low-cost hardware, and stronger pretrained visual encoders for room-level novelty.
-
-
-% In the unusual situation where you want a paper to appear in the
-% references without citing it in the main text, use \nocite
-% \nocite{langley00}
+This draft supports a narrow claim: decoupled planning and terrain-adaptive execution can produce useful real-rover exploration from onboard world feedback. Future work is safety-aware reward, separate sensor/safety monitors for low-cost hardware, and stronger pretrained visual encoders for room-level novelty. The current results should not be over-interpreted until repeated runs and ablations replace the placeholder table.
 
 \clearpage
 \bibliography{example_paper}
-\bibliographystyle{icml2026}
+\bibliographystyle{icml2025}
 
 \clearpage
 \appendix
 \section{Appendix Placeholder}
-
-This appendix will contain extended run sheets, additional frame grids, reward-audit details, and repeated-run ablations. The main paper target is four pages before references and appendix.
+Extended run sheets, reward-audit details, and repeated-run ablations will go here.
 
 \end{document}
-
-% This document was modified from the file originally made available by
-% Pat Langley and Andrea Danyluk for ICML-2K. This version was created
-% by Iain Murray in 2018, and modified by Alexandre Bouchard in
-% 2019 and 2021 and by Csaba Szepesvari, Gang Niu and Sivan Sabato in 2022.
-% Modified again in 2023 and 2024 by Sivan Sabato and Jonathan Scarlett.
-% Previous contributors include Dan Roy, Lise Getoor and Tobias
-% Scheffer, which was slightly modified from the 2010 version by
-% Thorsten Joachims & Johannes Fuernkranz, slightly modified from the
-% 2009 version by Kiri Wagstaff and Sam Roweis's 2008 version, which is
-% slightly modified from Prasad Tadepalli's 2007 version which is a
-% lightly changed version of the previous year's version by Andrew
-% Moore, which was in turn edited from those of Kristian Kersting and
-% Codrina Lauth. Alex Smola contributed to the algorithmic style files.

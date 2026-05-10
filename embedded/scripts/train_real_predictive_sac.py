@@ -568,6 +568,176 @@ class RealPredictiveSACEnv(gym.Env):
         )
 
 
+def default_pcvm_path(sac_path):
+    path = Path(sac_path)
+    if path.suffix:
+        return str(path.with_name(f'{path.stem}_pcvm.pt'))
+    return str(path) + '_pcvm.pt'
+
+
+def default_replay_path(sac_path):
+    path = Path(sac_path)
+    if path.suffix:
+        return str(path.with_name(f'{path.stem}_replay.pkl'))
+    return str(path) + '_replay.pkl'
+
+
+def get_pcvm_model(env):
+    builder = getattr(env, 'obs_builder', None)
+    return getattr(builder, 'model', None)
+
+
+def _running_mean_state(obj):
+    if obj is None:
+        return None
+    return {'n': int(getattr(obj, 'n', 0)), 'mean': float(getattr(obj, 'mean', 0.0))}
+
+
+def _load_running_mean(obj, state):
+    if obj is None or not isinstance(state, dict):
+        return
+    obj.n = int(state.get('n', 0))
+    obj.mean = float(state.get('mean', 0.0))
+
+
+def _memory_bank_state(bank):
+    if bank is None:
+        return None
+    return {
+        'bank': [x.detach().cpu() for x in getattr(bank, 'bank', [])],
+        'counts': list(getattr(bank, 'counts', [])),
+        'last_seen': list(getattr(bank, 'last_seen', [])),
+        'maxlen': int(getattr(bank, 'maxlen', 0)),
+        'known_dist': float(getattr(bank, 'known_dist', 0.0)),
+        'update_rate': float(getattr(bank, 'update_rate', 0.0)),
+    }
+
+
+def _load_memory_bank(bank, state, device):
+    if bank is None or not isinstance(state, dict):
+        return
+    bank.bank = [x.detach().to(device) for x in state.get('bank', [])]
+    bank.counts = list(state.get('counts', []))
+    bank.last_seen = list(state.get('last_seen', []))
+    if 'maxlen' in state:
+        bank.maxlen = int(state['maxlen'])
+    if 'known_dist' in state:
+        bank.known_dist = float(state['known_dist'])
+    if 'update_rate' in state:
+        bank.update_rate = float(state['update_rate'])
+
+
+def pcvm_state_dict(model, args):
+    if model is None:
+        return None
+    state = {
+        'format': 'pcvm_state_v1',
+        'backend': args.backend,
+        'action_mode': args.action_mode,
+        'action_dim': int(getattr(model, 'action_dim', 0)),
+        'class_name': model.__class__.__name__,
+        'device': str(getattr(model, 'device', 'cpu')),
+        'step': int(getattr(model, 'step', 0)),
+        'net': model.net.state_dict() if hasattr(model, 'net') else None,
+        'opt': model.opt.state_dict() if hasattr(model, 'opt') else None,
+        'rnd_opt': model.rnd_opt.state_dict() if hasattr(model, 'rnd_opt') else None,
+        'memory': _memory_bank_state(getattr(model, 'memory', None)),
+        'visual_memory': _memory_bank_state(getattr(model, 'visual_memory', None)),
+        'rnd_norm': _running_mean_state(getattr(model, 'rnd_norm', None)),
+        'surprise_norm': _running_mean_state(getattr(model, 'surprise_norm', None)),
+        'hidden': getattr(model, 'hidden', None).detach().cpu() if getattr(model, 'hidden', None) is not None else None,
+        'prev_hidden': getattr(model, 'prev_hidden', None).detach().cpu() if getattr(model, 'prev_hidden', None) is not None else None,
+        'prev_z': getattr(model, 'prev_z', None).detach().cpu() if getattr(model, 'prev_z', None) is not None else None,
+        'prev_visual': getattr(model, 'prev_visual', None).detach().cpu() if getattr(model, 'prev_visual', None) is not None else None,
+        'prev_proprio': getattr(model, 'prev_proprio', None).detach().cpu() if getattr(model, 'prev_proprio', None) is not None else None,
+        'tokens': [x.detach().cpu() for x in getattr(model, 'tokens', [])],
+        'pose': [float(getattr(model, 'pose_x', 0.0)), float(getattr(model, 'pose_y', 0.0)), float(getattr(model, 'yaw_rad', 0.0))],
+    }
+    return state
+
+
+def save_pcvm_state(model, path, args):
+    if model is None or path is None:
+        return None
+    import torch
+
+    state = pcvm_state_dict(model, args)
+    if state is None:
+        return None
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(state, path)
+    return str(path)
+
+
+def load_pcvm_state(model, path, args):
+    if model is None or path is None:
+        return False
+    path = Path(path)
+    if not path.exists():
+        print(json.dumps({'warning': 'pcvm_resume_missing', 'path': str(path)}, sort_keys=True), flush=True)
+        return False
+    import torch
+
+    state = torch.load(path, map_location=getattr(model, 'device', 'cpu'))
+    device = getattr(model, 'device', 'cpu')
+    saved_action_dim = state.get('action_dim')
+    current_action_dim = int(getattr(model, 'action_dim', 0))
+    if saved_action_dim is not None and int(saved_action_dim) != current_action_dim:
+        print(json.dumps({
+            'warning': 'pcvm_resume_action_dim_mismatch',
+            'path': str(path),
+            'saved_action_dim': int(saved_action_dim),
+            'current_action_dim': current_action_dim,
+        }, sort_keys=True), flush=True)
+        return False
+    if state.get('net') is not None and hasattr(model, 'net'):
+        missing, unexpected = model.net.load_state_dict(state['net'], strict=False)
+        if missing or unexpected:
+            print(json.dumps({'warning': 'pcvm_net_partial_load', 'missing': missing, 'unexpected': unexpected}, sort_keys=True), flush=True)
+    for attr, key in (('opt', 'opt'), ('rnd_opt', 'rnd_opt')):
+        opt = getattr(model, attr, None)
+        if opt is not None and state.get(key) is not None:
+            try:
+                opt.load_state_dict(state[key])
+            except Exception as exc:
+                print(json.dumps({'warning': f'pcvm_{key}_load_failed', 'error': repr(exc)}, sort_keys=True), flush=True)
+    if not args.reset_pcvm_memory_on_resume:
+        _load_memory_bank(getattr(model, 'memory', None), state.get('memory'), device)
+        _load_memory_bank(getattr(model, 'visual_memory', None), state.get('visual_memory'), device)
+    if not args.reset_pcvm_norms_on_resume:
+        _load_running_mean(getattr(model, 'rnd_norm', None), state.get('rnd_norm'))
+        _load_running_mean(getattr(model, 'surprise_norm', None), state.get('surprise_norm'))
+    if not args.reset_pcvm_hidden_on_resume:
+        for attr in ('hidden', 'prev_hidden', 'prev_z', 'prev_visual', 'prev_proprio'):
+            tensor = state.get(attr)
+            if tensor is not None and hasattr(model, attr):
+                setattr(model, attr, tensor.detach().to(device))
+        if hasattr(model, 'tokens') and state.get('tokens') is not None:
+            model.tokens.clear()
+            for token in state.get('tokens', []):
+                model.tokens.append(token.detach().to(device))
+    elif hasattr(model, 'reset'):
+        model.reset()
+    else:
+        for attr in ('prev_hidden', 'prev_z', 'prev_visual', 'prev_proprio'):
+            if hasattr(model, attr):
+                setattr(model, attr, None)
+        if hasattr(model, 'tokens'):
+            model.tokens.clear()
+    if not args.reset_pcvm_pose_on_resume and isinstance(state.get('pose'), (list, tuple)) and len(state['pose']) >= 3:
+        model.pose_x = float(state['pose'][0])
+        model.pose_y = float(state['pose'][1])
+        model.yaw_rad = float(state['pose'][2])
+    else:
+        for attr in ('pose_x', 'pose_y', 'yaw_rad'):
+            if hasattr(model, attr):
+                setattr(model, attr, 0.0)
+    if not args.reset_pcvm_step_on_resume and 'step' in state:
+        model.step = int(state['step'])
+    return True
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Train predictive SAC online on the real rover.')
     parser.add_argument('--steps', type=int, default=100)
@@ -577,6 +747,18 @@ def parse_args():
     parser.add_argument('--log-path', default=None, help='Write per-step JSONL records for later analysis')
     parser.add_argument('--frame-dir', default=None, help='Save one post-action camera frame per step')
     parser.add_argument('--resume', default=None)
+    parser.add_argument('--pcvm-save-path', default=None, help='Save PCVM/PCVM-M/PCVM-T learnable state here; defaults to <save>_pcvm.pt')
+    parser.add_argument('--pcvm-resume-path', default=None, help='Resume PCVM state from here; defaults to sidecar next to --resume')
+    parser.add_argument('--no-auto-pcvm-resume', action='store_true', help='Do not auto-load <resume>_pcvm.pt when --resume is used')
+    parser.add_argument('--reset-pcvm-memory-on-resume', action='store_true', help='Resume PCVM weights but clear path/visual memory banks')
+    parser.add_argument('--reset-pcvm-hidden-on-resume', action='store_true', help='Resume PCVM weights but clear recurrent/context state')
+    parser.add_argument('--reset-pcvm-pose-on-resume', action='store_true', help='Resume PCVM weights but reset dead-reckoned PCVM pose')
+    parser.add_argument('--reset-pcvm-norms-on-resume', action='store_true', help='Resume PCVM weights but reset novelty/surprise running normalizers')
+    parser.add_argument('--reset-pcvm-step-on-resume', action='store_true', help='Resume PCVM weights but reset its internal step counter')
+    parser.add_argument('--replay-save-path', default=None, help='Save SAC replay buffer here; defaults to <save>_replay.pkl')
+    parser.add_argument('--replay-resume-path', default=None, help='Resume SAC replay buffer from here; defaults to sidecar next to --resume')
+    parser.add_argument('--no-auto-replay-resume', action='store_true', help='Do not auto-load <resume>_replay.pkl when --resume is used')
+    parser.add_argument('--no-save-replay-buffer', action='store_true', help='Skip saving the SAC replay buffer sidecar')
     parser.add_argument('--sleep', type=float, default=0.2)
     parser.add_argument('--settle-seconds', type=float, default=0.0, help='Stop-and-settle time before post-action observation')
     parser.add_argument('--max-theta-deg', type=float, default=75.0)
@@ -667,6 +849,28 @@ def main():
     try:
         if args.resume:
             model = SAC.load(args.resume, env=env)
+            replay_resume_path = args.replay_resume_path
+            if replay_resume_path is None and not args.no_auto_replay_resume:
+                replay_resume_path = default_replay_path(args.resume)
+            if replay_resume_path is not None and Path(replay_resume_path).exists():
+                try:
+                    model.load_replay_buffer(replay_resume_path)
+                    print(json.dumps({'replay_resumed': replay_resume_path}, sort_keys=True), flush=True)
+                except Exception as exc:
+                    print(json.dumps({'warning': 'replay_resume_failed', 'path': replay_resume_path, 'error': repr(exc)}, sort_keys=True), flush=True)
+            pcvm_resume_path = args.pcvm_resume_path
+            if pcvm_resume_path is None and not args.no_auto_pcvm_resume:
+                pcvm_resume_path = default_pcvm_path(args.resume)
+            if args.backend in ('pcvm', 'pcvm-m', 'pcvm-t') and pcvm_resume_path is not None:
+                resumed = load_pcvm_state(get_pcvm_model(env), pcvm_resume_path, args)
+                print(json.dumps({
+                    'pcvm_resumed': bool(resumed),
+                    'pcvm_resume_path': pcvm_resume_path,
+                    'reset_pcvm_memory': bool(args.reset_pcvm_memory_on_resume),
+                    'reset_pcvm_hidden': bool(args.reset_pcvm_hidden_on_resume),
+                    'reset_pcvm_pose': bool(args.reset_pcvm_pose_on_resume),
+                    'reset_pcvm_norms': bool(args.reset_pcvm_norms_on_resume),
+                }, sort_keys=True), flush=True)
         else:
             model = SAC(
                 'MlpPolicy',
@@ -685,7 +889,22 @@ def main():
             )
         model.learn(total_timesteps=args.steps, log_interval=1, progress_bar=False)
         model.save(args.save_path)
-        print(json.dumps({'saved': args.save_path}, sort_keys=True), flush=True)
+        saved = {'sac_saved': args.save_path}
+        if not args.no_save_replay_buffer:
+            replay_save_path = args.replay_save_path or default_replay_path(args.save_path)
+            try:
+                Path(replay_save_path).parent.mkdir(parents=True, exist_ok=True)
+                model.save_replay_buffer(replay_save_path)
+                saved['replay_saved'] = replay_save_path
+            except Exception as exc:
+                saved['replay_save_failed'] = repr(exc)
+        if args.backend in ('pcvm', 'pcvm-m', 'pcvm-t'):
+            pcvm_save_path = args.pcvm_save_path or default_pcvm_path(args.save_path)
+            try:
+                saved['pcvm_saved'] = save_pcvm_state(get_pcvm_model(env), pcvm_save_path, args)
+            except Exception as exc:
+                saved['pcvm_save_failed'] = repr(exc)
+        print(json.dumps(saved, sort_keys=True), flush=True)
     finally:
         env.close()
     return 0
