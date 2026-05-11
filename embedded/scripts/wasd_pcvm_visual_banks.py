@@ -58,11 +58,11 @@ def read_pending_key(timeout=0.02):
     return key.lower()
 
 
-def make_model(backend, action_dim):
+def make_model(backend, action_dim, dino_model_name='facebook/dinov2-small'):
     if backend in ('pcvm-d', 'pcvm-j'):
         from VMM.pcvm_d import PCVMDINO
 
-        return PCVMDINO(action_dim=action_dim)
+        return PCVMDINO(action_dim=action_dim, model_name=dino_model_name)
     if backend == 'pcvm-m':
         from VMM.pcvm_m import PCVMMobileNet
 
@@ -171,6 +171,7 @@ def make_cluster_sheets(log_path, frame_dir, out_dir, keys=('pcvm_visual_cluster
 def parse_args():
     p = argparse.ArgumentParser(description='Manual WASD PCVM visual-bank logger.')
     p.add_argument('--backend', choices=['pcvm-d', 'pcvm-j', 'pcvm-m', 'pcvm'], default='pcvm-d')
+    p.add_argument('--dino-model-name', default='facebook/dinov2-small')
     p.add_argument('--out-dir', default=None)
     p.add_argument('--run-name', default=None)
     p.add_argument('--speed', type=float, default=55.0)
@@ -194,7 +195,7 @@ def main():
     print(__doc__.strip(), flush=True)
     print(json.dumps({'backend': args.backend, 'out_dir': str(out_dir), 'speed': args.speed}, sort_keys=True), flush=True)
     print('Loading visual model; first run may download DINOv2 weights.', flush=True)
-    model = make_model(args.backend, action_dim=2)
+    model = make_model(args.backend, action_dim=2, dino_model_name=args.dino_model_name)
     rover = RoverAPI(camera_enabled=True)
     fd = None
     old = None

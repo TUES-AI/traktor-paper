@@ -1,0 +1,18 @@
+{
+  "clusters": 8,
+  "counts": {
+    "0": 18,
+    "1": 17,
+    "2": 31,
+    "3": 13,
+    "4": 2,
+    "5": 8,
+    "6": 1,
+    "7": 6
+  },
+  "fps": 35.78776507685636,
+  "frames": 100,
+  "log": "results/pcvm_d3_from_latest_sac_100_20260511_pure_dinov3_336_thresh11/trajectory.jsonl",
+  "mean_seconds": 0.02794251045999772,
+  "png": "results/pcvm_d3_from_latest_sac_100_20260511_pure_dinov3_336_thresh11/dinov3_onnx_visual_clusters.png"
+}

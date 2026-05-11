@@ -72,6 +72,7 @@ def row_sensors(row):
 def parse_args():
     p = argparse.ArgumentParser(description='Replay saved rover frames through a PCVM visual backend.')
     p.add_argument('--backend', choices=['pcvm-d', 'pcvm-j', 'pcvm-m', 'pcvm'], default='pcvm-d')
+    p.add_argument('--dino-model-name', default='facebook/dinov2-small')
     p.add_argument('--log', default='results/pcvm_m_from_latest_sac_100_20260510.jsonl')
     p.add_argument('--frame-dir', default='results/pcvm_m_from_latest_sac_100_20260510_frames')
     p.add_argument('--out-dir', default=None)
@@ -100,7 +101,7 @@ def main():
     rows = load_rows(log_path)
     if args.limit > 0:
         rows = rows[: args.limit]
-    model = make_model(args.backend, action_dim=args.action_dim)
+    model = make_model(args.backend, action_dim=args.action_dim, dino_model_name=args.dino_model_name)
     if args.visual_known_dist is not None and hasattr(model, 'visual_memory'):
         model.visual_memory.known_dist = float(args.visual_known_dist)
     if args.path_known_dist is not None and hasattr(model, 'memory'):

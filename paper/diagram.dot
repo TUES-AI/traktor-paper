@@ -1,0 +1,249 @@
+digraph ControllableVisualDynamicsMemory {
+  graph [
+    rankdir=LR,
+    compound=true,
+    splines=ortho,
+    nodesep=0.45,
+    ranksep=0.9,
+    bgcolor="white",
+    fontname="Helvetica",
+    fontsize=14,
+    labelloc=t,
+    label="Controllable Visual Dynamics Memory: DINO + IMU/Executor Feedback + RND + SAC"
+  ];
+  node [
+    shape=box,
+    style="rounded,filled",
+    fillcolor="#f8f8f8",
+    color="#444444",
+    fontname="Helvetica",
+    fontsize=10
+  ];
+  edge [
+    color="#555555",
+    fontname="Helvetica",
+    fontsize=9,
+    arrowsize=0.7
+  ];
+  subgraph cluster_model {
+    label="LEFT: online model dynamics and control wiring";
+    color="#aaaaaa";
+    style="rounded";
+    frame_t [
+      fillcolor="#e8f1ff",
+      label="Camera frame I_t\nRGB image\npost-action observation"
+    ];
+    dino [
+      fillcolor="#d6eaff",
+      label="Frozen DINOv3 ONNX encoder\ninput: 336x336 RGB\noutput: e_t in R^384\nL2 normalized"
+    ];
+    range_t [
+      fillcolor="#fff1d6",
+      label="Range sensors r_t\nfront / left / right\nR^3"
+    ];
+    last_action [
+      fillcolor="#fff1d6",
+      label="Last executed action a_{t-1}\nrelative heading scalar\nR^1"
+    ];
+    imu_exec [
+      fillcolor="#ffe4d6",
+      label="Executor + IMU feedback\nexecuted distance estimate\nyaw / turn success\ncontact / stall / recovery\nNOT main reward by itself"
+    ];
+    encoder [
+      fillcolor="#e5ffe5",
+      label="Controllable visual encoder f_theta\nMLP/GRU context encoder\ninput: [e_t, r_t, a_{t-1}]\noutput: phi_t in R^128"
+    ];
+    phi_t [
+      fillcolor="#d8ffd8",
+      label="Controllable latent phi_t\nR^128\nvisual state filtered through action context"
+    ];
+    candidate_actions [
+      fillcolor="#f0e6ff",
+      label="Candidate relative headings A\n{-75, -45, 0, +45, +75}\nK = 5"
+    ];
+    transition [
+      fillcolor="#e5ffe5",
+      label="Forward dynamics T_psi\ninput: [phi_t, a_i]\noutput: predicted phi_hat_{t+1}(a_i)\nNN: MLP"
+    ];
+    predicted_candidates [
+      fillcolor="#eaffea",
+      label="Imagined candidate futures\nphi_hat_{t+1}(a_i), i=1..K\nNO camera scan\nNO memory update"
+    ];
+    density_memory [
+      fillcolor="#d8ffd8",
+      label="Latent density / memory\nkNN or prototype density in phi-space\nreturns controllable novelty N(phi)"
+    ];
+    rnd [
+      fillcolor="#e0ffe8",
+      label="RND on controllable latent\nfrozen random target g(phi)\ntrainable predictor p(phi)\nRND error = ||p(phi)-g(phi)||^2"
+    ];
+    candidate_scores [
+      fillcolor="#f0e6ff",
+      label="Candidate scores q_i\nq_i = novelty(phi_hat_i)\n      * safety_clearance_i\ninput to SAC, not reward yet"
+    ];
+    sac_obs [
+      fillcolor="#f7e6ff",
+      label="SAC observation o_t\nphi_t: 128\nrange: 3\nlast action: 1\ncandidate novelty: K=5\ncandidate clearance: K=5\nRND/surprise scalars: 2\nproposed total: 144 dims"
+    ];
+    sac [
+      fillcolor="#ead6ff",
+      label="SAC policy pi(a|o)\nactor/critic\noutput: theta_norm in [-1,1]\n1D relative heading"
+    ];
+    executor [
+      fillcolor="#ffe4d6",
+      label="Deterministic executor\nturn with IMU feedback\ndrive until front threshold / timeout / safety\nterrain-adaptive world-bounded action"
+    ];
+    frame_next [
+      fillcolor="#e8f1ff",
+      label="Next camera frame I_{t+1}\npost-drive / post-settle"
+    ];
+    dino_next [
+      fillcolor="#d6eaff",
+      label="Frozen DINOv3\nI_{t+1} -> e_{t+1} in R^384"
+    ];
+    encoder_next [
+      fillcolor="#e5ffe5",
+      label="Same encoder f_theta\n[e_{t+1}, r_{t+1}, a_t]\n-> phi_{t+1}"
+    ];
+    inverse [
+      fillcolor="#e5ffe5",
+      label="Inverse model I_eta\ninput: [phi_t, phi_{t+1}]\npredict executed action a_t\nNN: MLP"
+    ];
+    losses [
+      fillcolor="#fffbd6",
+      label="Online self-supervised losses\nforward prediction\ninverse action prediction\nstatic/no-motion consistency\ncontrastive anti-collapse\nRND predictor loss"
+    ];
+    reward [
+      fillcolor="#ffdede",
+      label="Reward to SAC\ncontrollable novelty\n+ safe progress\n- contact/stall/recovery\n- zero progress\n- near obstacle"
+    ];
+    frame_t -> dino;
+    dino -> encoder;
+    range_t -> encoder;
+    last_action -> encoder;
+    encoder -> phi_t;
+    phi_t -> transition;
+    candidate_actions -> transition;
+    transition -> predicted_candidates;
+    predicted_candidates -> density_memory;
+    density_memory -> candidate_scores;
+    predicted_candidates -> candidate_scores;
+    phi_t -> rnd;
+    rnd -> sac_obs;
+    phi_t -> sac_obs;
+    range_t -> sac_obs;
+    last_action -> sac_obs;
+    candidate_scores -> sac_obs;
+    sac_obs -> sac;
+    sac -> executor;
+    executor -> frame_next;
+    executor -> imu_exec;
+    frame_next -> dino_next;
+    dino_next -> encoder_next;
+    imu_exec -> encoder_next;
+    encoder_next -> losses;
+    phi_t -> losses;
+    inverse -> losses;
+    phi_t -> inverse;
+    encoder_next -> inverse;
+    encoder_next -> rnd [label="phi_{t+1}"];
+    encoder_next -> density_memory [label="update only after valid transition"];
+    encoder_next -> reward;
+    rnd -> reward [label="confirmed RND novelty"];
+    imu_exec -> reward [label="gates + penalties"];
+    reward -> sac [style=dashed, label="RL update"];
+  }
+  subgraph cluster_methods {
+    label="RIGHT: equations, gates, reward, and paper explanation";
+    color="#aaaaaa";
+    style="rounded";
+    equations [
+      shape=note,
+      fillcolor="#ffffff",
+      label="Core equations\n\n\
+e_t = normalize(DINO(I_t)) in R^384\n\n\
+phi_t = f_theta(e_t, r_t, a_{t-1}) in R^128\n\n\
+phi_hat_{t+1}(a_i) = T_psi(phi_t, a_i)\n\n\
+candidate_score_i = N(phi_hat_{t+1}(a_i)) * clearance_i\n\n\
+a_t = SAC(phi_t, r_t, a_{t-1}, candidate_scores)"
+    ];
+    training [
+      shape=note,
+      fillcolor="#ffffff",
+      label="Self-supervised training losses\n\n\
+L_forward = ||T_psi(phi_t, a_t) - stopgrad(phi_{t+1})||^2\n\n\
+L_inverse = ||I_eta(phi_t, phi_{t+1}) - a_exec_t||^2\n\n\
+If executed_distance < d_min:\n\
+  L_static = ||phi_t - phi_{t+1}||^2\n\n\
+Optional contrastive loss:\n\
+  real next close, random other states far\n\n\
+L_RND = ||p(phi_t) - stopgrad(g(phi_t))||^2"
+    ];
+    gates [
+      shape=note,
+      fillcolor="#ffffff",
+      label="Trust gates from world feedback\n\n\
+valid_transition =\n\
+  motion_ok\n\
+  AND safety_ok\n\
+  AND quality_ok\n\
+  AND not recovery_or_contact\n\n\
+motion_ok:\n\
+  executed_distance_cm > d_min\n\
+  OR useful executed yaw change\n\n\
+safety_ok:\n\
+  front_range > near_wall_threshold\n\
+  no emergency stop\n\n\
+quality_ok:\n\
+  not blurry\n\
+  not over/under-exposed\n\
+  not low-information"
+    ];
+    novelty [
+      shape=note,
+      fillcolor="#ffffff",
+      label="Novelty definition\n\n\
+Do NOT reward raw image novelty.\n\n\
+Compute novelty in controllable latent phi-space:\n\
+  density novelty / kNN distance / RND error\n\n\
+Candidate futures are imagined by T_psi.\n\
+They do not update memory.\n\n\
+Only actual post-action phi_{t+1}\n\
+updates density/RND/memory."
+    ];
+    reward_math [
+      shape=note,
+      fillcolor="#ffffff",
+      label="Reward sketch\n\n\
+r_t =\n\
+  w_nov * valid_transition * controllable_novelty(phi_{t+1})\n\
++ w_lp  * valid_transition * learning_progress_t\n\
++ w_dist * safe_executed_distance_t\n\
+- w_near * near_wall_penalty_t\n\
+- w_zero * zero_progress_t\n\
+- w_rec  * recovery_or_contact_t\n\n\
+learning_progress_t =\n\
+  old_forward_error - new_forward_error"
+    ];
+    explanation [
+      shape=note,
+      fillcolor="#ffffff",
+      label="Methods-section interpretation\n\n\
+The frozen DINO encoder supplies perceptual features.\n\
+The dynamics model learns which visual changes are controllable by action.\n\
+RND/density is evaluated in this controllable latent space, not raw pixels.\n\
+SAC receives imagined novelty scores for candidate headings without rotating the robot.\n\
+Executor/IMU/range feedback teaches whether transitions were real, safe, and controllable.\n\n\
+Claim:\n\
+Ungrounded visual novelty rewards artifacts.\n\
+Controllable visual novelty rewards action-caused expansion of the robot's world model."
+    ];
+    equations -> training [style=invis];
+    training -> gates [style=invis];
+    gates -> novelty [style=invis];
+    novelty -> reward_math [style=invis];
+    reward_math -> explanation [style=invis];
+  }
+  reward -> reward_math [ltail=cluster_model, lhead=cluster_methods, style=dashed, color="#aa3333"];
+  candidate_scores -> equations [style=dashed, color="#777777"];
+}

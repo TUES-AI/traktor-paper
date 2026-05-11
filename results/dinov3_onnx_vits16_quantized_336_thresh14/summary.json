@@ -1,0 +1,11 @@
+{
+  "clusters": 1,
+  "counts": {
+    "0": 96
+  },
+  "fps": 36.1380539185658,
+  "frames": 100,
+  "log": "results/dinov3_onnx_vits16_quantized_336_thresh14/trajectory.jsonl",
+  "mean_seconds": 0.027671661629965455,
+  "png": "results/dinov3_onnx_vits16_quantized_336_thresh14/dinov3_onnx_visual_clusters.png"
+}

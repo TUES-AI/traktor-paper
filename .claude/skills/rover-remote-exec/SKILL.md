@@ -8,7 +8,6 @@ description: Sync local code changes to the Pi rover via git diff over SSH and r
 Diff-sync local changes to `ssh rover` and execute.
 
 - Remote path: `/home/yasen/traktor-paper`
-- Remote venv: `/home/yasen/traktor-venv/bin/python`
 
 ## Sync after every local edit
 
@@ -20,7 +19,7 @@ git diff --binary | ssh rover 'set -e; cd /home/yasen/traktor-paper; git reset -
 ## Run a script
 
 ```bash
-ssh rover 'set -e; cd /home/yasen/traktor-paper; /home/yasen/traktor-venv/bin/python script.py'
+ssh rover 'set -e; cd /home/yasen/traktor-paper; python3 script.py'
 ```
 
 ## Pull data back

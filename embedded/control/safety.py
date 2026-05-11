@@ -31,6 +31,8 @@ class SafetyConfig:
     forward_contact_stall_ratio: float = 0.45
     forward_contact_reverse_cm: float = 25.0
     ultrasonic_timeout_seconds: float = 0.03
+    front_fast_timeout_seconds: float = 0.008
+    front_fast_sample_seconds: float = 0.005
     no_echo_is_clear: bool = True
 
 
@@ -61,6 +63,10 @@ class SafetyController:
     def read_distances(self):
         data = self.rover.get_ultrasonic(timeout_seconds=self.config.ultrasonic_timeout_seconds)
         return {'left': data.get(2), 'right': data.get(1), 'front': data.get(3)}
+
+    def read_front_distance(self, timeout_seconds=None):
+        timeout_seconds = self.config.front_fast_timeout_seconds if timeout_seconds is None else float(timeout_seconds)
+        return self.rover.get_ultrasonic(sensor_id='front', timeout_seconds=timeout_seconds)
 
     def front_stop_cm(self, speed_pct):
         speed_ratio = max(0.0, min(1.0, float(speed_pct) / 100.0))
