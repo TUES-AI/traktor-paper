@@ -1,0 +1,40 @@
+{
+  "bank_sheets": {
+    "3": "results/cvdm_real_100_tuned_epoch2_20260511/banks/cvdm_epoch2_bank_03.jpg"
+  },
+  "clusters": {
+    "3": {
+      "count": 100,
+      "created_this_epoch": 0,
+      "mean_distance_cm": 25.55137567520069,
+      "mean_novelty_phi": 0.12032975751161576,
+      "mean_reward": -0.25262217721048924,
+      "positive_steps": 14,
+      "reward_sum": -25.262217721048923,
+      "step_range": [
+        1,
+        100
+      ]
+    }
+  },
+  "contributors": {
+    "contact_penalty": 0.0,
+    "distance_reward": 3.0577314983001993,
+    "learning_progress_reward": 2.1016033088017138e-06,
+    "near_obstacle_penalty": -0.8276450408163264,
+    "new_cluster_bonus": 0.0,
+    "novelty_reward": 1.9376937198638917,
+    "recovery_penalty": -17.849999999999998,
+    "safe_motion_bonus": 1.4000000000000001,
+    "zero_progress_penalty": -12.980000000000011
+  },
+  "final_bank_size": 4,
+  "frames": 101,
+  "mean_reward": -0.2526221772104893,
+  "new_cluster_steps": [],
+  "new_clusters_created": 0,
+  "overview_sheet": "results/cvdm_real_100_tuned_epoch2_20260511/banks/cvdm_epoch2_banks_overview.jpg",
+  "positive_steps": 14,
+  "records": 100,
+  "reward_sum": -25.262217721048927
+}

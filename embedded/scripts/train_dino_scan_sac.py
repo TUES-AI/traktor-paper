@@ -175,7 +175,7 @@ def parse_args():
     p.add_argument('--until-front-max-seconds', type=float, default=6.0)
     p.add_argument('--cm-per-second', type=float, default=40.0)
     p.add_argument('--input-size', type=int, default=336)
-    p.add_argument('--known-dist', type=float, default=1.10)
+    p.add_argument('--known-dist', type=float, default=1.00)
     p.add_argument('--norm-dist', type=float, default=2.20)
     p.add_argument('--memory-warmup', type=int, default=0)
     p.add_argument('--learning-starts', type=int, default=10)
