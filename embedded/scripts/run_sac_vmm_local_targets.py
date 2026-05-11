@@ -49,6 +49,8 @@ DEFAULT_MODELS = {
     'mine': 'results/predictive_sac_seed42.zip',
     'pcvm': 'results/pcvm_cnn_sac_real.zip',
     'pcvm-m': 'results/pcvm_m_sac_real.zip',
+    'pcvm-d': 'results/pcvm_d_sac_real.zip',
+    'pcvm-j': 'results/pcvm_d_sac_real.zip',
     'pcvm-t': 'results/pcvm_t_sac_real.zip',
 }
 
@@ -294,7 +296,7 @@ class PredictiveRoverObsBuilder(RealRoverObsBuilder):
 
 
 class PCVMRoverObsBuilder(RealRoverObsBuilder):
-    def __init__(self, rover, safety, mobilenet=False, transformer=False, action_dim=1):
+    def __init__(self, rover, safety, mobilenet=False, dino=False, jepa=False, transformer=False, action_dim=1):
         super().__init__(rover, safety, use_camera_vmm=False)
         self.last_frame = None
         self.action_dim = int(action_dim)
@@ -307,6 +309,10 @@ class PCVMRoverObsBuilder(RealRoverObsBuilder):
             from VMM.pcvm_m import PCVMMobileNet
 
             self.model = PCVMMobileNet(action_dim=self.action_dim)
+        elif dino or jepa:
+            from VMM.pcvm_d import PCVMDINO
+
+            self.model = PCVMDINO(action_dim=self.action_dim)
         else:
             from VMM.pcvm import PCVM
 
@@ -449,9 +455,11 @@ def parse_args():
     mode.add_argument('--mine', action='store_const', const='mine', dest='mode')
     mode.add_argument('--pcvm', action='store_const', const='pcvm', dest='mode')
     mode.add_argument('--pcvm-m', action='store_const', const='pcvm-m', dest='mode')
+    mode.add_argument('--pcvm-d', action='store_const', const='pcvm-d', dest='mode')
+    mode.add_argument('--pcvm-j', action='store_const', const='pcvm-j', dest='mode')
     mode.add_argument('--pcvm-t', action='store_const', const='pcvm-t', dest='mode')
     parser.set_defaults(mode='vmm')
-    parser.add_argument('--mode', choices=['no-vmm', 'vmm', 'mine', 'pcvm', 'pcvm-m', 'pcvm-t'], help='Observation backend/method to run')
+    parser.add_argument('--mode', choices=['no-vmm', 'vmm', 'mine', 'pcvm', 'pcvm-m', 'pcvm-d', 'pcvm-j', 'pcvm-t'], help='Observation backend/method to run')
     parser.add_argument('--model', default=None, help='Path to Stable-Baselines SAC .zip model')
     parser.add_argument('--steps', type=int, default=20)
     parser.add_argument('--sleep', type=float, default=0.25)
@@ -483,7 +491,7 @@ def main():
     model = SAC.load(args.model)
     obs_dim = int(np.prod(model.observation_space.shape))
     pcvm_dim = pcvm_obs_dim(2)
-    expected_obs_dim = {'no-vmm': 3, 'vmm': 12, 'mine': 79, 'pcvm': pcvm_dim, 'pcvm-m': pcvm_dim, 'pcvm-t': pcvm_dim}[args.mode]
+    expected_obs_dim = {'no-vmm': 3, 'vmm': 12, 'mine': 79, 'pcvm': pcvm_dim, 'pcvm-m': pcvm_dim, 'pcvm-d': pcvm_dim, 'pcvm-j': pcvm_dim, 'pcvm-t': pcvm_dim}[args.mode]
     if obs_dim != expected_obs_dim:
         raise ValueError(f'Mode {args.mode} expects obs_dim={expected_obs_dim}, model has obs_dim={obs_dim}')
     print(json.dumps({
@@ -494,7 +502,7 @@ def main():
         'dry_run': args.dry_run,
     }, sort_keys=True), flush=True)
 
-    camera_enabled = (args.mode == 'vmm' and not args.no_camera_vmm) or args.mode in ('mine', 'pcvm', 'pcvm-m', 'pcvm-t')
+    camera_enabled = (args.mode == 'vmm' and not args.no_camera_vmm) or args.mode in ('mine', 'pcvm', 'pcvm-m', 'pcvm-d', 'pcvm-j', 'pcvm-t')
     rover = RoverAPI(camera_enabled=camera_enabled)
     imu = MPU9150(bus=1, address=0x68)
     safety = SafetyController(
@@ -509,8 +517,16 @@ def main():
     )
     if args.mode == 'mine':
         obs_builder = PredictiveRoverObsBuilder(rover, safety)
-    elif args.mode in ('pcvm', 'pcvm-m', 'pcvm-t'):
-        obs_builder = PCVMRoverObsBuilder(rover, safety, mobilenet=(args.mode == 'pcvm-m'), transformer=(args.mode == 'pcvm-t'), action_dim=2)
+    elif args.mode in ('pcvm', 'pcvm-m', 'pcvm-d', 'pcvm-j', 'pcvm-t'):
+        obs_builder = PCVMRoverObsBuilder(
+            rover,
+            safety,
+            mobilenet=(args.mode == 'pcvm-m'),
+            dino=(args.mode == 'pcvm-d'),
+            jepa=(args.mode == 'pcvm-j'),
+            transformer=(args.mode == 'pcvm-t'),
+            action_dim=2,
+        )
     else:
         obs_builder = RealRoverObsBuilder(rover, safety, use_camera_vmm=(args.mode == 'vmm' and not args.no_camera_vmm))
     executor = LocalTargetExecutor(
@@ -526,7 +542,7 @@ def main():
         for step in range(args.steps):
             if args.mode == 'mine':
                 obs, distances, backend_info = obs_builder.build_predictive(last_executed_action)
-            elif args.mode in ('pcvm', 'pcvm-m', 'pcvm-t'):
+            elif args.mode in ('pcvm', 'pcvm-m', 'pcvm-d', 'pcvm-j', 'pcvm-t'):
                 obs, distances, backend_info = obs_builder.build_pcvm(last_executed_action, last_execution_feedback)
             else:
                 obs, distances = obs_builder.build(obs_dim)
