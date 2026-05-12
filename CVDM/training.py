@@ -115,43 +115,20 @@ class CVDMTrainer:
             static_loss = phi_t.new_tensor(0.0)
         rnd_error = self.model.rnd.error(phi_tp1.detach())
         rnd_loss = rnd_error.mean()
-        anti_collapse_loss, anti_collapse_metrics = self._anti_collapse_loss(phi_t, phi_tp1)
         total = (
             self.config.forward_weight * forward_loss
             + self.config.inverse_weight * inverse_loss
             + self.config.static_weight * static_loss
             + self.config.rnd_weight * rnd_loss
-            + self.config.anti_collapse_weight * anti_collapse_loss
         )
         metrics = {
             "forward_loss": float(forward_loss.detach().cpu().item()),
             "inverse_loss": float(inverse_loss.detach().cpu().item()),
             "static_loss": float(static_loss.detach().cpu().item()),
             "rnd_loss": float(rnd_loss.detach().cpu().item()),
-            "anti_collapse_loss": float(anti_collapse_loss.detach().cpu().item()),
             "loss": float(total.detach().cpu().item()),
-            **anti_collapse_metrics,
         }
         return total, metrics
-
-    def _anti_collapse_loss(self, phi_t: torch.Tensor, phi_tp1: torch.Tensor) -> tuple[torch.Tensor, dict[str, float]]:
-        z = torch.cat([phi_t, phi_tp1], dim=0)
-        if z.shape[0] < 2:
-            zero = z.new_tensor(0.0)
-            return zero, {
-                "phi_batch_std_mean": 0.0,
-                "phi_batch_std_min": 0.0,
-                "phi_mean_direction_norm": float(torch.linalg.vector_norm(z.mean(dim=0)).detach().cpu().item()) if z.numel() else 0.0,
-            }
-        std = torch.sqrt(z.var(dim=0, unbiased=False) + 1e-6)
-        std_loss = F.relu(self.config.anti_collapse_min_std - std).mean()
-        mean_direction_norm = torch.linalg.vector_norm(z.mean(dim=0), ord=2)
-        mean_loss = mean_direction_norm.pow(2) * self.config.anti_collapse_mean_weight
-        return std_loss + mean_loss, {
-            "phi_batch_std_mean": float(std.mean().detach().cpu().item()),
-            "phi_batch_std_min": float(std.min().detach().cpu().item()),
-            "phi_mean_direction_norm": float(mean_direction_norm.detach().cpu().item()),
-        }
 
     @torch.no_grad()
     def transition_error(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:

@@ -7,15 +7,6 @@ import torch.nn.functional as F
 from CVDM.config import CVDMConfig
 
 
-def init_orthogonal_mlp(module: nn.Module, final_gain: float = 1.0) -> None:
-    linears = [m for m in module.modules() if isinstance(m, nn.Linear)]
-    for i, layer in enumerate(linears):
-        gain = final_gain if i == len(linears) - 1 else nn.init.calculate_gain("relu")
-        nn.init.orthogonal_(layer.weight, gain=gain)
-        if layer.bias is not None:
-            nn.init.zeros_(layer.bias)
-
-
 class ControllableEncoder(nn.Module):
     def __init__(self, config: CVDMConfig):
         super().__init__()
@@ -23,13 +14,10 @@ class ControllableEncoder(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(in_dim, config.hidden_dim),
             nn.ReLU(),
-            nn.LayerNorm(config.hidden_dim),
             nn.Linear(config.hidden_dim, config.hidden_dim),
             nn.ReLU(),
-            nn.LayerNorm(config.hidden_dim),
             nn.Linear(config.hidden_dim, config.phi_dim),
         )
-        init_orthogonal_mlp(self.net, final_gain=1.0)
 
     def forward(self, dino: torch.Tensor, ranges: torch.Tensor, last_action: torch.Tensor) -> torch.Tensor:
         x = torch.cat([dino, ranges, last_action], dim=-1)
@@ -42,13 +30,10 @@ class ForwardDynamics(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(config.phi_dim + config.action_dim, config.hidden_dim),
             nn.ReLU(),
-            nn.LayerNorm(config.hidden_dim),
             nn.Linear(config.hidden_dim, config.hidden_dim),
             nn.ReLU(),
-            nn.LayerNorm(config.hidden_dim),
             nn.Linear(config.hidden_dim, config.phi_dim),
         )
-        init_orthogonal_mlp(self.net, final_gain=1.0)
 
     def forward(self, phi: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         return F.normalize(self.net(torch.cat([phi, action], dim=-1)), dim=-1)
@@ -65,7 +50,6 @@ class InverseDynamics(nn.Module):
             nn.Linear(config.hidden_dim // 2, config.action_dim),
             nn.Tanh(),
         )
-        init_orthogonal_mlp(self.net, final_gain=0.01)
 
     def forward(self, phi_t: torch.Tensor, phi_tp1: torch.Tensor) -> torch.Tensor:
         return self.net(torch.cat([phi_t, phi_tp1], dim=-1))
@@ -86,8 +70,6 @@ class RND(nn.Module):
             nn.ReLU(),
             nn.Linear(config.hidden_dim, config.rnd_out_dim),
         )
-        init_orthogonal_mlp(self.target, final_gain=1.0)
-        init_orthogonal_mlp(self.predictor, final_gain=1.0)
         for p in self.target.parameters():
             p.requires_grad = False
 

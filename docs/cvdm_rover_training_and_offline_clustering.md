@@ -33,7 +33,7 @@ PYTHONUNBUFFERED=1 /home/yasen/.venv/bin/python CVDM/train_real_rover.py \
   --front-stop-cm 35 \
   --front-clear-cm 45 \
   --until-front-cm 40 \
-  --until-front-max-seconds 2.0 \
+  --until-front-max-seconds 3.0 \
   --turn-pwm 60 \
   --drive-pwm 65 \
   --settle-seconds 0.35 \
@@ -73,20 +73,6 @@ Outputs:
 - `offline_support_banks/support_vector_summary.json`
 
 The offline clustering is nearest-exemplar/support-vector clustering, not centroid clustering. Each bank stores real support frames; assignment distance is the nearest support vector distance. This avoids the previous catch-all centroid problem.
-
-Online CVDM memory is different: it clusters learned `phi = encoder(DINO + range + last_action)` latents. Offline clustering audits saved DINOv3 image embeddings directly. If online banks fragment repeated corridor views while offline DINO shows only 1--2 banks, treat online novelty as reward-misaligned until the CVDM latent has more training or stronger anchoring.
-
-## Loop/revisit reward terms
-
-The CVDM rover reward now restores the old PCVM-style local loop pressure:
-
-- dead-reckon a coarse `(x, y, heading)` pose from executed yaw and estimated drive distance
-- keep recent reward poses in a loop memory
-- subtract `loop_revisit_penalty * max(0, 1 - nearest_recent_pose_dist / loop_near_radius_m)` when the rover revisits the same local patch after meaningful motion
-- add a recovery-streak penalty when recoveries repeat in the recent window
-- log coverage bbox/radius deltas, with optional expansion bonus weights
-
-Defaults are intentionally close to the old PCVM slow-RLxF values: loop radius `0.45m`, loop revisit penalty `0.45`, recovery streak penalty `0.10`.
 
 ## Current gates
 
