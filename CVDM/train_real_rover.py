@@ -6,6 +6,7 @@ import json
 import math
 import sys
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ for p in (REPO_ROOT, EMBEDDED_ROOT, EMBEDDED_ROOT / "scripts"):
 from CVDM.checkpoint import load_cvdm_checkpoint, save_cvdm_checkpoint, save_individual_model_params
 from CVDM.config import CVDMConfig
 from CVDM.logger import CVDMRunLogger, to_jsonable, utc_now_iso
+from CVDM.memory import PhiKNNMemory
 from CVDM.observation import normalized_ranges
 from CVDM.replay import CVDMTransition, TransitionReplayBuffer
 from CVDM.reward import reward_from_transition
@@ -72,6 +74,7 @@ class RealCVDMSACEnv(gym.Env):
             safe_front_min_cm=args.safe_front_min_cm,
             safe_motion_min_cm=args.safe_motion_min_cm,
             novelty_weight=args.cvdm_novelty_weight,
+            novelty_existing_cluster_weight=args.cvdm_novelty_existing_cluster_weight,
             learning_progress_weight=args.cvdm_learning_progress_weight,
             distance_reward_weight=args.cvdm_distance_reward_weight,
             safe_motion_bonus=args.cvdm_safe_motion_bonus,
@@ -86,6 +89,20 @@ class RealCVDMSACEnv(gym.Env):
             clear_front_turn_penalty=args.cvdm_clear_front_turn_penalty,
             clear_front_turn_start_cm=args.cvdm_clear_front_turn_start_cm,
             clear_front_turn_scale_cm=args.cvdm_clear_front_turn_scale_cm,
+            anti_collapse_weight=args.cvdm_anti_collapse_weight,
+            anti_collapse_min_std=args.cvdm_anti_collapse_min_std,
+            anti_collapse_mean_weight=args.cvdm_anti_collapse_mean_weight,
+            loop_revisit_penalty=args.cvdm_loop_revisit_penalty,
+            loop_near_radius_m=args.cvdm_loop_near_radius_m,
+            loop_long_move_cm=args.cvdm_loop_long_move_cm,
+            loop_long_move_scale=args.cvdm_loop_long_move_scale,
+            recovery_streak_penalty=args.cvdm_recovery_streak_penalty,
+            coverage_bbox_weight=args.cvdm_coverage_bbox_weight,
+            coverage_radius_weight=args.cvdm_coverage_radius_weight,
+            coverage_exit_bonus=args.cvdm_coverage_exit_bonus,
+            coverage_exit_scale=args.cvdm_coverage_exit_scale,
+            coverage_exit_margin_m=args.cvdm_coverage_exit_margin_m,
+            coverage_exit_scale_m=args.cvdm_coverage_exit_scale_m,
             metadata={"script": "CVDM/train_real_rover.py"},
         )
         self.logger = CVDMRunLogger(args.out_dir)
@@ -126,6 +143,12 @@ class RealCVDMSACEnv(gym.Env):
         self.current_state: dict[str, Any] | None = None
         self.last_executed_action = np.zeros(1, dtype=np.float32)
         self.last_transition_surprise = 0.0
+        self.pose_x_m = 0.0
+        self.pose_y_m = 0.0
+        self.pose_heading_rad = 0.0
+        self.path_points: deque[tuple[float, float]] = deque(maxlen=args.path_memory_size)
+        self.recent_reward_poses: deque[tuple[float, float]] = deque(maxlen=args.loop_memory_size)
+        self.recent_recoveries: deque[int] = deque(maxlen=args.recovery_streak_window)
         self.start_wall_time = utc_now_iso()
         self.gyro_bias = self.safety.calibrate_gyro()
         self._write_initial_manifest()
@@ -174,10 +197,15 @@ class RealCVDMSACEnv(gym.Env):
             replay=None if self.args.no_resume_replay else self.replay,
             map_location=self.trainer.device,
         )
+        reset_memory = bool(self.args.no_resume_cvdm_memory)
+        if reset_memory:
+            self.trainer.memory = PhiKNNMemory(self.config)
         self.resume_state = {
             "cvdm_path": str(cvdm_path),
             "cvdm_step": int(self.trainer.step),
             "cvdm_replay_size": len(self.replay),
+            "cvdm_memory_size": len(self.trainer.memory),
+            "cvdm_memory_reset": reset_memory,
             "checkpoint_format": state.get("format"),
             "checkpoint_extra": state.get("extra", {}),
         }
@@ -268,8 +296,100 @@ class RealCVDMSACEnv(gym.Env):
         super().reset(seed=seed)
         self.last_executed_action = np.zeros(1, dtype=np.float32)
         self.last_transition_surprise = 0.0
+        self.pose_x_m = 0.0
+        self.pose_y_m = 0.0
+        self.pose_heading_rad = 0.0
+        self.path_points.clear()
+        self.recent_reward_poses.clear()
+        self.recent_recoveries.clear()
+        self.path_points.append((self.pose_x_m, self.pose_y_m))
         self.current_state = self._capture_observation("reset", self.last_executed_action)
         return self.current_state["obs"].astype(np.float32), {"distances": self.current_state["distances"]}
+
+    def _dead_reckon_pose(self, motion: dict[str, Any]) -> dict[str, float]:
+        self.pose_heading_rad += math.radians(float(motion.get("executed_yaw_deg") or 0.0))
+        distance_m = max(0.0, float(motion.get("executed_distance_cm") or 0.0)) / 100.0
+        self.pose_x_m += distance_m * math.cos(self.pose_heading_rad)
+        self.pose_y_m += distance_m * math.sin(self.pose_heading_rad)
+        return {
+            "x_m": float(self.pose_x_m),
+            "y_m": float(self.pose_y_m),
+            "heading_rad": float(self.pose_heading_rad),
+            "heading_deg": float(math.degrees(self.pose_heading_rad)),
+        }
+
+    def _coverage_expansion_bonus(self, pose: dict[str, float], motion: dict[str, Any]) -> tuple[float, dict[str, float | bool]]:
+        if not self.path_points:
+            return 0.0, {
+                "coverage_bbox_area_before_m2": 0.0,
+                "coverage_bbox_area_after_m2": 0.0,
+                "coverage_bbox_delta_m2": 0.0,
+                "coverage_radius_before_m": 0.0,
+                "coverage_radius_after_m": 0.0,
+                "coverage_radius_delta_m": 0.0,
+                "coverage_exit_bonus": 0.0,
+                "coverage_exit_amount_m": 0.0,
+                "coverage_exited_known_bbox": False,
+            }
+        x = float(pose["x_m"])
+        y = float(pose["y_m"])
+        xs = [p[0] for p in self.path_points]
+        ys = [p[1] for p in self.path_points]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        area_before = (max(xs) - min(xs)) * (max(ys) - min(ys)) if len(xs) > 1 else 0.0
+        area_after = (max(max_x, x) - min(min_x, x)) * (max(max_y, y) - min(min_y, y))
+        area_delta = max(0.0, area_after - area_before)
+        start_x, start_y = self.path_points[0]
+        radius_before = max(float(math.hypot(px - start_x, py - start_y)) for px, py in self.path_points)
+        radius_after = max(radius_before, float(math.hypot(x - start_x, y - start_y)))
+        radius_delta = max(0.0, radius_after - radius_before)
+        exit_amount = max(min_x - x, x - max_x, min_y - y, y - max_y, 0.0)
+        exit_ok = (
+            exit_amount >= self.config.coverage_exit_margin_m
+            and bool(motion.get("visual_motion_valid"))
+            and not bool(motion.get("contact_or_stall"))
+            and not bool(motion.get("recovery"))
+        )
+        exit_bonus = 0.0
+        if exit_ok:
+            exit_bonus = self.config.coverage_exit_bonus + self.config.coverage_exit_scale * min(1.0, exit_amount / max(1e-6, self.config.coverage_exit_scale_m))
+        bonus = self.config.coverage_bbox_weight * area_delta + self.config.coverage_radius_weight * radius_delta + exit_bonus
+        return float(bonus), {
+            "coverage_bbox_area_before_m2": float(area_before),
+            "coverage_bbox_area_after_m2": float(area_after),
+            "coverage_bbox_delta_m2": float(area_delta),
+            "coverage_radius_before_m": float(radius_before),
+            "coverage_radius_after_m": float(radius_after),
+            "coverage_radius_delta_m": float(radius_delta),
+            "coverage_exit_bonus": float(exit_bonus),
+            "coverage_exit_amount_m": float(exit_amount),
+            "coverage_exited_known_bbox": bool(exit_ok),
+        }
+
+    def _loop_revisit_penalty(self, pose: dict[str, float], motion: dict[str, Any]) -> tuple[float, dict[str, float | None]]:
+        x = float(pose["x_m"])
+        y = float(pose["y_m"])
+        min_dist = None
+        if self.recent_reward_poses:
+            min_dist = min(float(math.hypot(x - px, y - py)) for px, py in self.recent_reward_poses)
+        self.recent_reward_poses.append((x, y))
+        if min_dist is None:
+            return 0.0, {"loop_min_dist_m": None, "loop_pressure": 0.0}
+        if not bool(motion.get("visual_motion_valid")):
+            return 0.0, {"loop_min_dist_m": float(min_dist), "loop_pressure": 0.0}
+        radius = max(1e-6, self.config.loop_near_radius_m)
+        pressure = max(0.0, 1.0 - float(min_dist) / radius)
+        penalty = self.config.loop_revisit_penalty * pressure
+        if float(motion.get("executed_distance_cm") or 0.0) >= self.config.loop_long_move_cm:
+            penalty *= self.config.loop_long_move_scale
+        return float(penalty), {"loop_min_dist_m": float(min_dist), "loop_pressure": float(pressure)}
+
+    def _recovery_streak_penalty(self, motion: dict[str, Any]) -> tuple[float, dict[str, int | float]]:
+        self.recent_recoveries.append(1 if motion.get("recovery") else 0)
+        count = int(sum(self.recent_recoveries))
+        penalty = self.config.recovery_streak_penalty * max(0, count - 1) if motion.get("recovery") else 0.0
+        return float(penalty), {"recovery_streak_count": count, "recovery_streak_penalty": float(penalty)}
 
     def _recover_if_blocked(self, distances: dict) -> dict[str, Any] | None:
         reverse = self.safety.reverse_if_too_close(self.args.drive_pwm, distances)
@@ -378,6 +498,11 @@ class RealCVDMSACEnv(gym.Env):
         executed_action = self._executed_action_from_feedback(execution, recovery)
         post = self._capture_observation(f"step_{self.step_count:04d}_post", executed_action)
         motion = self._motion_terms(execution, recovery, post["distances"], executed_action)
+        pose = self._dead_reckon_pose(motion)
+        coverage_expansion_bonus, coverage_terms = self._coverage_expansion_bonus(pose, motion)
+        loop_penalty, loop_terms = self._loop_revisit_penalty(pose, motion)
+        recovery_streak_penalty, recovery_streak_terms = self._recovery_streak_penalty(motion)
+        self.path_points.append((float(pose["x_m"]), float(pose["y_m"])))
         memory_update_ok, memory_update_reason, memory_update_detail = self._memory_update_gate(motion, post)
 
         transition = CVDMTransition(
@@ -425,7 +550,13 @@ class RealCVDMSACEnv(gym.Env):
             pre_front_cm=pre["distances"].get("front"),
             requested_theta_deg=theta_deg,
             requested_theta_norm=theta_norm,
+            loop_penalty=loop_penalty,
+            recovery_streak_penalty=recovery_streak_penalty,
+            coverage_expansion_bonus=coverage_expansion_bonus,
         )
+        reward_terms.update(loop_terms)
+        reward_terms.update(coverage_terms)
+        reward_terms.update(recovery_streak_terms)
         record = {
             "step": self.step_count,
             "timestamp_utc": utc_now_iso(),
@@ -458,6 +589,7 @@ class RealCVDMSACEnv(gym.Env):
             "reward_terms": reward_terms,
             "reward": float(reward),
             "motion": motion,
+            "pose_dead_reckon": pose,
             "memory_update_gate": memory_update_detail,
         }
         self.logger.append(record)
@@ -540,6 +672,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--resume-sac", default=None, help="Explicit Stable-Baselines SAC .zip to resume.")
     p.add_argument("--resume-cvdm", default=None, help="Explicit CVDM full checkpoint to resume.")
     p.add_argument("--no-resume-replay", action="store_true", help="Resume model weights/optimizers but start with empty SAC and CVDM replay buffers.")
+    p.add_argument("--no-resume-cvdm-memory", action="store_true", help="Resume CVDM weights/optimizers but reset the online phi cluster memory.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--visual-encoder", choices=["dino3", "hash"], default="dino3")
     p.add_argument("--dino-input-size", type=int, default=336)
@@ -547,7 +680,7 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument("--max-theta-deg", type=float, default=75.0)
     p.add_argument("--until-front-cm", type=float, default=40.0)
-    p.add_argument("--until-front-max-seconds", type=float, default=1.5)
+    p.add_argument("--until-front-max-seconds", type=float, default=2.0)
     p.add_argument("--cm-per-second", type=float, default=40.0)
     p.add_argument("--theta-deadzone", type=float, default=0.06)
     p.add_argument("--theta-power-gamma", type=float, default=2.0)
@@ -587,14 +720,15 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument("--safe-front-min-cm", type=float, default=35.0)
     p.add_argument("--safe-motion-min-cm", type=float, default=5.0)
-    p.add_argument("--cvdm-novelty-weight", type=float, default=1.00)
+    p.add_argument("--cvdm-novelty-weight", type=float, default=0.65)
+    p.add_argument("--cvdm-novelty-existing-cluster-weight", type=float, default=0.0)
     p.add_argument("--cvdm-learning-progress-weight", type=float, default=0.55)
-    p.add_argument("--cvdm-distance-reward-weight", type=float, default=0.30)
-    p.add_argument("--cvdm-safe-motion-bonus", type=float, default=0.10)
-    p.add_argument("--cvdm-new-cluster-bonus", type=float, default=0.35)
+    p.add_argument("--cvdm-distance-reward-weight", type=float, default=0.45)
+    p.add_argument("--cvdm-safe-motion-bonus", type=float, default=0.15)
+    p.add_argument("--cvdm-new-cluster-bonus", type=float, default=0.08)
     p.add_argument("--cvdm-contact-penalty", type=float, default=0.75)
-    p.add_argument("--cvdm-zero-progress-penalty", type=float, default=0.22)
-    p.add_argument("--cvdm-recovery-penalty", type=float, default=0.12)
+    p.add_argument("--cvdm-zero-progress-penalty", type=float, default=0.28)
+    p.add_argument("--cvdm-recovery-penalty", type=float, default=0.18)
     p.add_argument("--cvdm-near-obstacle-penalty", type=float, default=0.25)
     p.add_argument("--cvdm-obstructed-forward-penalty", type=float, default=0.45)
     p.add_argument("--cvdm-obstructed-forward-front-cm", type=float, default=40.0)
@@ -602,6 +736,23 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cvdm-clear-front-turn-penalty", type=float, default=0.05)
     p.add_argument("--cvdm-clear-front-turn-start-cm", type=float, default=45.0)
     p.add_argument("--cvdm-clear-front-turn-scale-cm", type=float, default=80.0)
+    p.add_argument("--cvdm-anti-collapse-weight", type=float, default=0.05)
+    p.add_argument("--cvdm-anti-collapse-min-std", type=float, default=0.02)
+    p.add_argument("--cvdm-anti-collapse-mean-weight", type=float, default=1.0)
+    p.add_argument("--cvdm-loop-revisit-penalty", type=float, default=0.45)
+    p.add_argument("--cvdm-loop-near-radius-m", type=float, default=0.45)
+    p.add_argument("--cvdm-loop-long-move-cm", type=float, default=80.0)
+    p.add_argument("--cvdm-loop-long-move-scale", type=float, default=0.45)
+    p.add_argument("--cvdm-recovery-streak-penalty", type=float, default=0.18)
+    p.add_argument("--cvdm-coverage-bbox-weight", type=float, default=0.03)
+    p.add_argument("--cvdm-coverage-radius-weight", type=float, default=0.20)
+    p.add_argument("--cvdm-coverage-exit-bonus", type=float, default=1.20)
+    p.add_argument("--cvdm-coverage-exit-scale", type=float, default=0.80)
+    p.add_argument("--cvdm-coverage-exit-margin-m", type=float, default=0.20)
+    p.add_argument("--cvdm-coverage-exit-scale-m", type=float, default=0.80)
+    p.add_argument("--path-memory-size", type=int, default=400)
+    p.add_argument("--loop-memory-size", type=int, default=25)
+    p.add_argument("--recovery-streak-window", type=int, default=8)
     args = p.parse_args()
     if args.run_name is None:
         args.run_name = "cvdm_" + datetime.now().strftime("%Y%m%d_%H%M%S")

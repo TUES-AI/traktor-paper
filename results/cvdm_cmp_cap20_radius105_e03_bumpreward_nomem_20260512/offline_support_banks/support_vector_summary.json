@@ -1,0 +1,67 @@
+{
+  "add_support_dist": 0.45,
+  "algorithm": "online nearest-exemplar support-vector clustering on saved DINOv3 embeddings",
+  "bank_sheets": {
+    "0": "results/cvdm_cmp_cap20_radius105_e03_bumpreward_nomem_20260512/offline_support_banks/support_vector_bank_00.jpg"
+  },
+  "clusters": {
+    "0": {
+      "count": 51,
+      "created_step": 1,
+      "mean_abs_yaw_deg": 37.053803055245865,
+      "mean_distance_cm": 23.57002734431173,
+      "mean_reward": -0.187902894780609,
+      "reward_sum": -9.58304763381106,
+      "step_range": [
+        1,
+        99
+      ],
+      "support_steps": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        9,
+        10
+      ],
+      "supports": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        8,
+        9
+      ]
+    }
+  },
+  "deleted_frames": 49,
+  "deleted_reasons": {
+    "front_close_no_open_range": 1,
+    "image_blur": 30,
+    "low_contrast": 2,
+    "not_moved_or_rotated_enough": 22
+  },
+  "deleted_sheet": "results/cvdm_cmp_cap20_radius105_e03_bumpreward_nomem_20260512/offline_support_banks/support_vector_deleted_frames.jpg",
+  "match_dist": 1.0,
+  "max_supports": 8,
+  "overview": "results/cvdm_cmp_cap20_radius105_e03_bumpreward_nomem_20260512/offline_support_banks/support_vector_banks_overview.jpg",
+  "records": 100,
+  "source_run": "results/cvdm_cmp_cap20_radius105_e03_bumpreward_nomem_20260512",
+  "thresholds": {
+    "image_max_bright_frac": 0.45,
+    "image_max_dark_frac": 0.55,
+    "image_max_mean": 238.0,
+    "image_min_laplacian_var": 25.0,
+    "image_min_mean": 18.0,
+    "image_min_std": 8.0,
+    "visual_front_close_clear_cm": 100.0,
+    "visual_min_front_cm": 25.0,
+    "visual_min_motion_cm": 10.0,
+    "visual_min_yaw_deg": 5.0
+  },
+  "valid_frames": 51
+}

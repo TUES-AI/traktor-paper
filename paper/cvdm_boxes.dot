@@ -1,0 +1,52 @@
+digraph CVDM_Boxes {
+  graph [
+    rankdir=LR,
+    bgcolor="white",
+    splines=ortho,
+    nodesep=0.55,
+    ranksep=0.75,
+    pad=0.08,
+    margin=0.02,
+    fontname="Helvetica",
+    fontsize=18,
+    labelloc=t,
+    label="CVDM Rover Loop"
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    penwidth=1.5,
+    fontname="Helvetica-Bold",
+    fontsize=18,
+    margin="0.16,0.10",
+    height=0.62,
+    width=1.25
+  ];
+
+  edge [
+    color="#555555",
+    arrowsize=0.8,
+    penwidth=1.5,
+    fontname="Helvetica",
+    fontsize=11
+  ];
+
+  sense [label="Sense", fillcolor="#d8e9ff", color="#6d96c7"];
+  latent [label="Latent", fillcolor="#d8ffd8", color="#75b875"];
+  world [label="World\nModel", fillcolor="#e6ffe6", color="#75b875"];
+  memory [label="Memory", fillcolor="#fff1d6", color="#c7a45c"];
+  reward [label="Reward", fillcolor="#ffdede", color="#c76b6b"];
+  policy [label="Policy", fillcolor="#ead8ff", color="#9a78c4"];
+  exec [label="Executor", fillcolor="#ffe4d6", color="#c78568"];
+
+  sense -> latent;
+  latent -> world;
+  world -> memory;
+  memory -> policy;
+  policy -> exec;
+
+  world -> reward [constraint=false];
+  reward -> policy [constraint=false];
+  exec -> world [constraint=false, xlabel="feedback"];
+}

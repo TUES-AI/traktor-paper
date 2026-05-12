@@ -1,0 +1,165 @@
+{
+  "add_support_dist": 0.45,
+  "algorithm": "online nearest-exemplar support-vector clustering on saved DINOv3 embeddings",
+  "bank_sheets": {
+    "0": "results/cvdm_cmp_cap20_radius105_e01_20260512/offline_support_banks/support_vector_bank_00.jpg",
+    "1": "results/cvdm_cmp_cap20_radius105_e01_20260512/offline_support_banks/support_vector_bank_01.jpg",
+    "2": "results/cvdm_cmp_cap20_radius105_e01_20260512/offline_support_banks/support_vector_bank_02.jpg",
+    "3": "results/cvdm_cmp_cap20_radius105_e01_20260512/offline_support_banks/support_vector_bank_03.jpg",
+    "4": "results/cvdm_cmp_cap20_radius105_e01_20260512/offline_support_banks/support_vector_bank_04.jpg"
+  },
+  "clusters": {
+    "0": {
+      "count": 14,
+      "created_step": 1,
+      "mean_abs_yaw_deg": 32.176739394864335,
+      "mean_distance_cm": 27.892750257139728,
+      "mean_reward": 0.045774757937188534,
+      "reward_sum": 0.6408466111206395,
+      "step_range": [
+        1,
+        99
+      ],
+      "support_steps": [
+        1,
+        2,
+        3,
+        8,
+        9,
+        10,
+        11,
+        12
+      ],
+      "supports": [
+        0,
+        1,
+        2,
+        7,
+        8,
+        9,
+        10,
+        11
+      ]
+    },
+    "1": {
+      "count": 2,
+      "created_step": 5,
+      "mean_abs_yaw_deg": 38.249240443110466,
+      "mean_distance_cm": 39.27158968000185,
+      "mean_reward": 0.13419806639479392,
+      "reward_sum": 0.26839613278958785,
+      "step_range": [
+        5,
+        6
+      ],
+      "support_steps": [
+        5,
+        6
+      ],
+      "supports": [
+        4,
+        5
+      ]
+    },
+    "2": {
+      "count": 2,
+      "created_step": 20,
+      "mean_abs_yaw_deg": 8.524608425796032,
+      "mean_distance_cm": 40.28915349998897,
+      "mean_reward": 0.07693870122673613,
+      "reward_sum": 0.15387740245347226,
+      "step_range": [
+        20,
+        21
+      ],
+      "support_steps": [
+        20,
+        21
+      ],
+      "supports": [
+        19,
+        20
+      ]
+    },
+    "3": {
+      "count": 21,
+      "created_step": 23,
+      "mean_abs_yaw_deg": 35.122332226351965,
+      "mean_distance_cm": 4.772132518094059,
+      "mean_reward": -0.2306112080741364,
+      "reward_sum": -4.842835369556864,
+      "step_range": [
+        23,
+        83
+      ],
+      "support_steps": [
+        23,
+        28,
+        35,
+        36,
+        37,
+        44,
+        45,
+        48
+      ],
+      "supports": [
+        22,
+        27,
+        34,
+        35,
+        36,
+        43,
+        44,
+        47
+      ]
+    },
+    "4": {
+      "count": 3,
+      "created_step": 43,
+      "mean_abs_yaw_deg": 30.83864152431488,
+      "mean_distance_cm": 0.0,
+      "mean_reward": -0.27019170375237156,
+      "reward_sum": -0.8105751112571147,
+      "step_range": [
+        43,
+        100
+      ],
+      "support_steps": [
+        43,
+        68,
+        100
+      ],
+      "supports": [
+        42,
+        67,
+        99
+      ]
+    }
+  },
+  "deleted_frames": 58,
+  "deleted_reasons": {
+    "front_close_no_open_range": 6,
+    "image_blur": 44,
+    "low_contrast": 3,
+    "not_moved_or_rotated_enough": 22
+  },
+  "deleted_sheet": "results/cvdm_cmp_cap20_radius105_e01_20260512/offline_support_banks/support_vector_deleted_frames.jpg",
+  "match_dist": 1.0,
+  "max_supports": 8,
+  "overview": "results/cvdm_cmp_cap20_radius105_e01_20260512/offline_support_banks/support_vector_banks_overview.jpg",
+  "records": 100,
+  "source_run": "results/cvdm_cmp_cap20_radius105_e01_20260512",
+  "thresholds": {
+    "image_max_bright_frac": 0.45,
+    "image_max_dark_frac": 0.55,
+    "image_max_mean": 238.0,
+    "image_min_laplacian_var": 25.0,
+    "image_min_mean": 18.0,
+    "image_min_std": 8.0,
+    "visual_front_close_clear_cm": 100.0,
+    "visual_min_front_cm": 25.0,
+    "visual_min_motion_cm": 10.0,
+    "visual_min_yaw_deg": 5.0
+  },
+  "valid_frames": 42
+}

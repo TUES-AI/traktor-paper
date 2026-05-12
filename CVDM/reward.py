@@ -19,6 +19,10 @@ def reward_from_transition(
     pre_front_cm: float | None = None,
     requested_theta_deg: float = 0.0,
     requested_theta_norm: float | None = None,
+    loop_penalty: float = 0.0,
+    recovery_streak_penalty: float = 0.0,
+    coverage_expansion_bonus: float = 0.0,
+    path_revisit_penalty: float = 0.0,
 ) -> tuple[float, dict[str, float | bool | None]]:
     front_ok = front_after_cm is not None and float(front_after_cm) > config.safe_front_min_cm
     safe_motion = (
@@ -27,8 +31,9 @@ def reward_from_transition(
         and front_ok
     )
     visual_reward_gate = bool(visual_memory_valid) and not bool(contact_or_stall)
+    novelty_cluster_weight = 1.0 if bool(new_cluster) else float(config.novelty_existing_cluster_weight)
 
-    novelty_reward = config.novelty_weight * float(novelty) if visual_reward_gate else 0.0
+    novelty_reward = config.novelty_weight * novelty_cluster_weight * float(novelty) if visual_reward_gate else 0.0
     learning_progress_reward = config.learning_progress_weight * float(learning_progress) if visual_reward_gate else 0.0
     distance_reward = 0.0
     if safe_motion:
@@ -62,12 +67,24 @@ def reward_from_transition(
     if front_after_cm is not None and float(front_after_cm) < config.safe_front_min_cm:
         near_obstacle_penalty = config.near_obstacle_penalty * ((config.safe_front_min_cm - float(front_after_cm)) / config.safe_front_min_cm) ** 2
 
-    reward = novelty_reward + learning_progress_reward + distance_reward + safe_motion_bonus + new_cluster_bonus
-    reward -= contact_penalty + zero_progress_penalty + recovery_penalty + near_obstacle_penalty + obstructed_forward_penalty + clear_front_turn_penalty
+    reward = novelty_reward + learning_progress_reward + distance_reward + safe_motion_bonus + new_cluster_bonus + float(coverage_expansion_bonus)
+    reward -= (
+        contact_penalty
+        + zero_progress_penalty
+        + recovery_penalty
+        + near_obstacle_penalty
+        + obstructed_forward_penalty
+        + clear_front_turn_penalty
+        + float(loop_penalty)
+        + float(recovery_streak_penalty)
+        + float(path_revisit_penalty)
+    )
     terms = {
         "safe_motion": bool(safe_motion),
         "visual_reward_gate": bool(visual_reward_gate),
         "novelty_reward": float(novelty_reward),
+        "novelty_cluster_weight": float(novelty_cluster_weight),
+        "novelty_existing_cluster_weight": float(config.novelty_existing_cluster_weight),
         "learning_progress_reward": float(learning_progress_reward),
         "distance_reward": float(distance_reward),
         "safe_motion_bonus": float(safe_motion_bonus),
@@ -81,6 +98,10 @@ def reward_from_transition(
         "obstructed_forward_weight": float(obstructed_forward_weight),
         "clear_front_turn_penalty": float(clear_front_turn_penalty),
         "clear_front_turn_gate": float(clear_front_turn_gate),
+        "loop_penalty": float(loop_penalty),
+        "recovery_streak_penalty": float(recovery_streak_penalty),
+        "coverage_expansion_bonus": float(coverage_expansion_bonus),
+        "path_revisit_penalty": float(path_revisit_penalty),
         "pre_front_cm": None if pre_front_cm is None else float(pre_front_cm),
         "requested_theta_deg": float(requested_theta_deg),
         "requested_theta_norm": None if requested_theta_norm is None else float(requested_theta_norm),

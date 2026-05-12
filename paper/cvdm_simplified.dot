@@ -1,0 +1,121 @@
+digraph CVDM_Simplified {
+  graph [
+    rankdir=LR,
+    bgcolor="white",
+    splines=ortho,
+    nodesep=0.30,
+    ranksep=0.50,
+    pad=0.08,
+    margin=0.02,
+    fontname="Helvetica",
+    fontsize=16,
+    labelloc=t,
+    label="CVDM: Controllable Visual Dynamics Memory"
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    color="#444444",
+    penwidth=1.2,
+    fontname="Helvetica",
+    fontsize=12,
+    margin="0.055,0.04",
+    height=0.28
+  ];
+
+  edge [
+    color="#555555",
+    arrowsize=0.65,
+    penwidth=1.2,
+    fontname="Helvetica",
+    fontsize=9
+  ];
+
+  subgraph cluster_sense {
+    label="Sense";
+    color="#d8e9ff";
+    style="rounded,filled";
+    fillcolor="#f5faff";
+    img [label="RGB", fillcolor="#d8e9ff"];
+    rng [label="Range", fillcolor="#fff1d6"];
+    imu [label="IMU", fillcolor="#fff1d6"];
+  }
+
+  subgraph cluster_latent {
+    label="Latent";
+    color="#d8ffd8";
+    style="rounded,filled";
+    fillcolor="#f7fff7";
+    dino [label="DINO", fillcolor="#d8e9ff"];
+    enc [label="Encoder", fillcolor="#d8ffd8"];
+    phi [label="Phi", fillcolor="#c8f7c8"];
+  }
+
+  subgraph cluster_world {
+    label="World Model";
+    color="#dff5df";
+    style="rounded,filled";
+    fillcolor="#fbfffb";
+    fwd [label="Forward", fillcolor="#e1ffe1"];
+    inv [label="Inverse", fillcolor="#e1ffe1"];
+    rnd [label="RND", fillcolor="#e1ffe1"];
+  }
+
+  subgraph cluster_memory {
+    label="Memory";
+    color="#fff0c8";
+    style="rounded,filled";
+    fillcolor="#fffdf7";
+    gate [label="Gate", fillcolor="#ffe8c8"];
+    bank [label="Banks", fillcolor="#fff1d6"];
+    score [label="Novelty", fillcolor="#fff1d6"];
+  }
+
+  subgraph cluster_act {
+    label="Act";
+    color="#ead8ff";
+    style="rounded,filled";
+    fillcolor="#fcf7ff";
+    obs [label="Obs", fillcolor="#f2dcff"];
+    sac [label="SAC", fillcolor="#ead8ff"];
+    squash [label="Squash", fillcolor="#ead8ff"];
+    exec [label="Executor", fillcolor="#ffe4d6"];
+  }
+
+  reward [label="Reward", fillcolor="#ffdede"];
+  loss [label="Losses", fillcolor="#fffbd6"];
+
+  img -> dino;
+  dino -> enc;
+  rng -> enc;
+  imu -> enc [style=dashed];
+  enc -> phi;
+
+  phi -> fwd;
+  phi -> inv;
+  phi -> rnd;
+  fwd -> loss;
+  inv -> loss;
+  rnd -> score;
+
+  phi -> gate;
+  rng -> gate;
+  imu -> gate;
+  gate -> bank [label="valid"];
+  bank -> score;
+
+  phi -> obs;
+  rng -> obs;
+  score -> obs;
+  obs -> sac;
+  sac -> squash;
+  squash -> exec [label="heading"];
+
+  exec -> imu [label="feedback"];
+  exec -> img [label="next"];
+  exec -> reward;
+  score -> reward;
+  gate -> reward;
+  reward -> sac [style=dashed, color="#aa3333", label="RL"];
+}

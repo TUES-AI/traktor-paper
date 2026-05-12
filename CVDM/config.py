@@ -25,6 +25,9 @@ class CVDMConfig:
     inverse_weight: float = 0.2
     static_weight: float = 0.5
     rnd_weight: float = 0.1
+    anti_collapse_weight: float = 0.05
+    anti_collapse_min_std: float = 0.02
+    anti_collapse_mean_weight: float = 1.0
     grad_clip_norm: float = 5.0
 
     static_distance_cm: float = 3.0
@@ -45,14 +48,15 @@ class CVDMConfig:
     image_max_dark_frac: float = 0.55
     image_max_bright_frac: float = 0.45
 
-    novelty_weight: float = 1.00
+    novelty_weight: float = 0.65
+    novelty_existing_cluster_weight: float = 0.0
     learning_progress_weight: float = 0.55
-    distance_reward_weight: float = 0.30
-    safe_motion_bonus: float = 0.10
-    new_cluster_bonus: float = 0.35
+    distance_reward_weight: float = 0.45
+    safe_motion_bonus: float = 0.15
+    new_cluster_bonus: float = 0.08
     contact_penalty: float = 0.75
-    zero_progress_penalty: float = 0.22
-    recovery_penalty: float = 0.12
+    zero_progress_penalty: float = 0.28
+    recovery_penalty: float = 0.18
     near_obstacle_penalty: float = 0.25
     obstructed_forward_penalty: float = 0.45
     obstructed_forward_front_cm: float = 40.0
@@ -60,6 +64,17 @@ class CVDMConfig:
     clear_front_turn_penalty: float = 0.05
     clear_front_turn_start_cm: float = 45.0
     clear_front_turn_scale_cm: float = 80.0
+    loop_revisit_penalty: float = 0.45
+    loop_near_radius_m: float = 0.45
+    loop_long_move_cm: float = 80.0
+    loop_long_move_scale: float = 0.45
+    recovery_streak_penalty: float = 0.18
+    coverage_bbox_weight: float = 0.03
+    coverage_radius_weight: float = 0.20
+    coverage_exit_bonus: float = 1.20
+    coverage_exit_scale: float = 0.80
+    coverage_exit_margin_m: float = 0.20
+    coverage_exit_scale_m: float = 0.80
     safe_motion_min_cm: float = 5.0
     safe_front_min_cm: float = 35.0
     reward_distance_scale_cm: float = 120.0
