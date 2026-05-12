@@ -62,6 +62,9 @@ class SafetyController:
         data = self.rover.get_ultrasonic(timeout_seconds=self.config.ultrasonic_timeout_seconds)
         return {'left': data.get(2), 'right': data.get(1), 'front': data.get(3)}
 
+    def read_front_distance(self):
+        return self.rover.get_ultrasonic(sensor_id='front', timeout_seconds=self.config.ultrasonic_timeout_seconds)
+
     def front_stop_cm(self, speed_pct):
         speed_ratio = max(0.0, min(1.0, float(speed_pct) / 100.0))
         cfg = self.config

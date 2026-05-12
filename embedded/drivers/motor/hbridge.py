@@ -28,7 +28,7 @@ class DualHBridgeMotorDriver:
         left_pwm_pin=19,
         right_pwm_pin=18,
         pwm_frequency_hz=100,
-        left_pwm_beta=0.90,
+        left_pwm_beta=0.85,
         right_pwm_beta=1.0,
     ):
         self.left_in1 = left_in1

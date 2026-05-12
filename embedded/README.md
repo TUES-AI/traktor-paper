@@ -1,26 +1,27 @@
-# Traktor Embedded Code
+# Traktor embedded stack
 
-This folder contains the Raspberry Pi rover stack. Current direction is **layered control**, not direct raw motor control from learning code.
+This folder contains the Raspberry Pi runtime stack for the visionless TWF rover.
 
 ```text
-scripts / future SAC planner
-    -> control safety layer
+TWF planner / scripts
+    -> safety + local-target executor
     -> RoverAPI
-    -> raw motor / ultrasonic / IMU / camera drivers
+    -> motor / ultrasonic / IMU drivers
 ```
 
-## Current Hardware
+No runtime camera path is kept here. Offline image clustering, if needed for paper analysis, lives in `tools/` and uses saved images only.
 
-Motors use an L298N with independent enable PWM pins exposed in code:
+## Hardware
+
+Motors use an L298N with independent enable PWM pins:
 
 ```text
 LEFT_MOTOR_PINS = (16, 1)
 RIGHT_MOTOR_PINS = (20, 21)
 MOTOR_PWM_PINS = (19, 18)
+LEFT_MOTOR_PWM_BETA = 0.85
 RIGHT_MOTOR_PWM_BETA = 1.0
 ```
-
-Current higher-level control still usually sends equal requested duty cycles: `left_pwm = right_pwm = value`. `RIGHT_MOTOR_PWM_BETA` is kept at `1.0` for now so it changes nothing, but can later compensate a weaker right side, for example `1.2`.
 
 Ultrasonic mapping:
 
@@ -30,22 +31,14 @@ sensor 2 = left
 sensor 3 = front
 ```
 
-Important: `None` / `NO_ECHO` is treated as unsafe for forward motion because very close or angled obstacles can produce no echo.
+`None` / `NO_ECHO` is treated as unsafe for forward motion because close or angled obstacles can produce no echo.
 
-Motion note: avoid small repeated motor start/stop ticks. The tracks need continuous motion to overcome static friction, so guide executors should update motor commands while moving and stop only for safety or completion.
-
-## Main Scripts
+## Main scripts
 
 Manual driving:
 
 ```bash
 ssh -t rover 'cd /home/yasen/traktor-paper; python3 embedded/scripts/wasd_control.py'
-```
-
-Interactive preset motion sequences:
-
-```bash
-ssh -t rover 'cd /home/yasen/traktor-paper; python3 embedded/scripts/preset_sequences.py'
 ```
 
 Reactive safety-first roaming:
@@ -54,48 +47,16 @@ Reactive safety-first roaming:
 ssh rover 'cd /home/yasen/traktor-paper; PYTHONUNBUFFERED=1 python3 embedded/scripts/reactive_roam.py --seconds 30'
 ```
 
-Guide calibration:
+Visionless TWF real-run script:
 
 ```bash
-ssh rover 'cd /home/yasen/traktor-paper; PYTHONUNBUFFERED=1 python3 embedded/scripts/execute_guide.py --preset shallow_left'
+ssh rover 'cd /home/yasen/traktor-paper; PYTHONUNBUFFERED=1 TWF_TRAIN_STEPS=100 bash embedded/scripts/train_real_twf_sac.sh'
 ```
 
-SAC-style guide execution through the safety layer:
+Guide/executor calibration:
 
 ```bash
-ssh rover 'cd /home/yasen/traktor-paper; PYTHONUNBUFFERED=1 python3 embedded/scripts/execute_sac_guide.py --preset avoid_left'
-```
-
-Continuous left-side obstacle bypass shape:
-
-```bash
-ssh rover 'cd /home/yasen/traktor-paper; PYTHONUNBUFFERED=1 python3 embedded/scripts/left_bypass_shape.py'
-```
-
-Two-vector SAC-style local guide with CSV logging:
-
-```bash
-ssh rover 'cd /home/yasen/traktor-paper; PYTHONUNBUFFERED=1 python3 embedded/scripts/execute_two_vector_guide.py --theta1 35 --d1 35 --theta2 -55 --d2 70'
-```
-
-Draw two target points locally and execute them:
-
-```bash
-/Volumes/SSD/v/py/bin/python tools/draw_two_vector_guide.py
-```
-
-Persistent WebSocket control UI with telemetry, WASD, and guide execution:
-
-```bash
-/Volumes/SSD/v/py/bin/python tools/rover_ws_control.py
-```
-
-This starts `embedded/scripts/rover_ws_server.py` on the Pi over SSH, then uses a persistent WebSocket connection instead of launching new SSH commands for every action.
-
-More robust plain TCP version:
-
-```bash
-/Volumes/SSD/v/py/bin/python tools/rover_tcp_control.py --restart-server
+ssh rover 'cd /home/yasen/traktor-paper; PYTHONUNBUFFERED=1 python3 embedded/scripts/execute_local_target.py --theta 30'
 ```
 
 Forward/spin calibration:
@@ -104,31 +65,24 @@ Forward/spin calibration:
 ssh rover 'cd /home/yasen/traktor-paper; PYTHONUNBUFFERED=1 python3 embedded/scripts/forward_spin_sequence.py'
 ```
 
-Live ultrasonic visualization from the Mac:
-
-```bash
-/Volumes/SSD/v/py/bin/python tools/visualize_rover_ultrasonic.py
-```
-
-## Current Safety Layer
+## Safety layer
 
 `embedded/control/safety.py` is the central safety filter. Higher-level code should call this layer rather than commanding motors directly.
 
 Current behavior:
 
 ```text
-front stop threshold scales with speed: 10cm to 35cm
-front must be >=30cm to resume after turning
-turning into a side requires that side sensor to be >=20cm
+front stop threshold scales with speed
+front must be clear before forward motion
+turning into a side requires that side sensor to be clear
 NO_ECHO is unsafe for front and turn-side checks
 stuck detection uses IMU response during commanded forward motion
 stuck recovery reverses briefly and turns toward freer side
 ```
 
-## Source Of Truth Docs
+## Source-of-truth docs
 
+- `PROJECT.md`: research direction.
 - `embedded/MOTOR_WIRING.md`: current L298N wiring.
 - `embedded/TRAKTOR_DIMENSIONS.md`: measured geometry and sensor placement.
 - `embedded/control/README.md`: control layering and safety contract.
-- `PROJECT.md`: research direction.
-- `PLAN.md`: work split and ablations.

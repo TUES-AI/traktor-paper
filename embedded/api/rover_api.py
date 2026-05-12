@@ -1,10 +1,10 @@
-"""High-level Raspberry Pi rover API.
+"""High-level Raspberry Pi rover API for the visionless rover stack.
 
-`RoverAPI` owns all hardware drivers and provides one place for application code
-to read sensors, capture camera frames, and command the motors.
+`RoverAPI` owns the sensor and motor drivers used by the runtime policy. Camera
+support is intentionally absent from this API: the current research direction is
+tiny mapless exploration from range/IMU/action world feedback only.
 """
 
-from drivers.camera.picam2 import PiCam2FrameDriver
 from drivers.gps.provider import GPSProvider
 from drivers.motor.hbridge import DualHBridgeMotorDriver
 from drivers.sensors.ultrasonic_array import UltrasonicArray
@@ -39,8 +39,10 @@ class RoverAPI:
         ultrasonic1_pins=ULTRASONIC_1_PINS,
         ultrasonic2_pins=ULTRASONIC_2_PINS,
         ultrasonic3_pins=ULTRASONIC_3_PINS,
-        camera_enabled=True,
+        camera_enabled=None,
     ):
+        if camera_enabled not in (None, False):
+            raise ValueError('RoverAPI is visionless; camera access belongs only in offline tooling')
         self.gps = GPSProvider(port=gps_port, baud=gps_baud, fallback_file=gps_fallback_file)
         self.ultrasonic = UltrasonicArray(
             sensor1_trig=ultrasonic1_pins[0],
@@ -61,7 +63,6 @@ class RoverAPI:
             left_pwm_beta=left_motor_pwm_beta,
             right_pwm_beta=right_motor_pwm_beta,
         )
-        self.camera = PiCam2FrameDriver() if camera_enabled else None
 
     def get_gps_values(self, timeout_seconds=2.0, allow_fallback=True):
         return self.gps.get_position(timeout_seconds=timeout_seconds, allow_fallback=allow_fallback)
@@ -91,20 +92,7 @@ class RoverAPI:
     def stop_motors(self):
         return self.motor.stop()
 
-    def getframe(self):
-        if self.camera is None:
-            raise RuntimeError('Camera is disabled for this RoverAPI instance')
-        return self.camera.take_picture()
-
-    def take_picture(self):
-        return self.getframe()
-
-    def get_camera_frame(self):
-        return self.getframe()
-
     def close(self):
         self.gps.close()
         self.motor.cleanup()
         self.ultrasonic.cleanup()
-        if self.camera is not None:
-            self.camera.close()

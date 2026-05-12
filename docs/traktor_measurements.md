@@ -4,7 +4,7 @@ Status: superseded by `embedded/TRAKTOR_DIMENSIONS.md` for actual current dimens
 
 This file is only the original blank measurement template.
 
-Goal: measure the real rover once, then use the same numbers in visualization, simulation, sensor projection, and map display.
+Goal: measure the real rover once, then use the same numbers in safety, executor calibration, and sensor projection.
 
 Use millimeters for distance measurements. Use degrees for sensor angles.
 
@@ -109,20 +109,6 @@ roll_deg:
 mounting_notes:
 ```
 
-## Camera
-
-```text
-x_mm:
-y_mm:
-z_mm:
-yaw_deg:
-pitch_deg:
-roll_deg:
-horizontal_fov_deg:
-vertical_fov_deg:
-resolution:
-```
-
 ## First Calibration Tests
 
 Straight-line test:
@@ -163,5 +149,4 @@ gyro_pattern_notes:
 2. Track separation.
 3. Distance sensor positions and yaw angles.
 4. IMU position and mounting orientation.
-5. Camera position and pitch.
-6. Straight-line and turn-in-place tests on at least two surfaces.
+5. Straight-line and turn-in-place tests on at least two surfaces.

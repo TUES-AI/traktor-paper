@@ -20,6 +20,9 @@ class LocalTargetExecutorConfig:
     obstacle_margin_cm: float = 20.0
     until_front_stop_cm: float = 40.0
     until_front_emergency_cm: float = 28.0
+    post_turn_front_settle_seconds: float = 0.75
+    post_turn_front_sample_dt: float = 0.08
+    open_front_bonus_cm: float = 90.0
 
 
 class LocalTargetExecutor:
@@ -98,6 +101,13 @@ class LocalTargetExecutor:
 
     def turn_to(self, theta_deg):
         cfg = self.config
+        if abs(float(theta_deg)) <= cfg.turn_tolerance_deg:
+            return {
+                'ok': True,
+                'reason': 'no_turn_needed',
+                'yaw_deg': 0.0,
+                'target_deg': float(theta_deg),
+            }
         direction = 'left' if theta_deg >= 0 else 'right'
         left_cmd, right_cmd = ('backward', 'forward') if direction == 'left' else ('forward', 'backward')
         target = abs(theta_deg) if direction == 'left' else -abs(theta_deg)
@@ -221,6 +231,13 @@ class LocalTargetExecutor:
             report['reason'] = f'turn_failed_or_blocked {turn["reason"]}'
             self.set_status(report['reason'])
             return report
+        front_check = self.wait_for_front_after_turn(front_stop_cm)
+        report['post_turn_front_check'] = front_check
+        report['front_space_after_turn_cm'] = front_check.get('front_cm')
+        if not front_check['ok']:
+            report['reason'] = front_check['reason']
+            self.set_status(report['reason'])
+            return report
         drive = self.drive_until_front(front_stop_cm)
         report['drive'] = drive
         report['clipped_distance_cm'] = float(drive.get('estimated_distance_cm') or 0.0)
@@ -228,12 +245,42 @@ class LocalTargetExecutor:
         self.set_status('idle' if drive['ok'] else drive['reason'])
         return report
 
+    def wait_for_front_after_turn(self, front_stop_cm):
+        cfg = self.config
+        self.set_status(f'post_turn_front_settle_{front_stop_cm:.1f}cm')
+        start = time.monotonic()
+        readings = []
+        while time.monotonic() - start < cfg.post_turn_front_settle_seconds:
+            front = self.safety.read_front_distance()
+            readings.append(front)
+            if front is not None and front <= front_stop_cm:
+                return {
+                    'ok': False,
+                    'reason': 'post_turn_front_blocked_before_drive',
+                    'front_cm': front,
+                    'threshold_cm': front_stop_cm,
+                    'readings': readings,
+                    'seconds': time.monotonic() - start,
+                }
+            time.sleep(cfg.post_turn_front_sample_dt)
+        concrete = [x for x in readings if x is not None]
+        front = min(concrete) if concrete else None
+        return {
+            'ok': True,
+            'reason': 'post_turn_front_clear',
+            'front_cm': front,
+            'threshold_cm': front_stop_cm,
+            'open_front_bonus': bool(front is not None and front >= cfg.open_front_bonus_cm),
+            'readings': readings,
+            'seconds': time.monotonic() - start,
+        }
+
     def drive_until_front(self, front_stop_cm=None):
         cfg = self.config
         front_stop_cm = cfg.until_front_stop_cm if front_stop_cm is None else float(front_stop_cm)
         emergency_cm = min(float(front_stop_cm), float(cfg.until_front_emergency_cm))
-        start_distances = self.safety.read_distances()
-        front = start_distances['front']
+        front = self.safety.read_front_distance()
+        start_distances = {'front': front}
         if front is not None and front <= front_stop_cm:
             return {
                 'ok': True,
@@ -251,8 +298,7 @@ class LocalTargetExecutor:
         last_front = front
         try:
             while time.monotonic() - start < cfg.max_drive_seconds:
-                distances = self.safety.read_distances()
-                front = distances['front']
+                front = self.safety.read_front_distance()
                 if front is not None:
                     last_front = front
                     elapsed = time.monotonic() - start

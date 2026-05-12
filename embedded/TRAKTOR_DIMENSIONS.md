@@ -49,15 +49,6 @@ right yaw: -90 deg
 butts touch the platform side faces
 ```
 
-Pi camera:
-
-```text
-x: centered above front distance sensor
-y: centered
-z: 12.0
-yaw: 0 deg, forward
-```
-
 MPU / IMU:
 
 ```text
@@ -161,7 +152,6 @@ def main():
 
     sensor_depth = 1.2
     add_sensor(ax, 'front sensor', (x_front + sensor_depth / 2, 0, 7.5), 0, '#ef4444')
-    add_sensor(ax, 'Pi camera', (x_front + sensor_depth / 2, 0, 12.0), 0, '#a855f7')
 
     side_x = x_back + 14.5
     side_y = body_width / 2 + sensor_depth / 2
