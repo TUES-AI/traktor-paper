@@ -9,11 +9,6 @@ Diff-sync local changes to `ssh rover` and execute.
 
 - Remote path: `/home/yasen/traktor-paper`
 
-## FIRST bring the raspberry to the latest commit!
-
-The raspberry could be some commits behind and that will result in problems when doing git diff syncing.
-To prevent this check if there are files on the raspberry that need to be `scp`-ed over, then reset the state and pull.
-
 ## Sync after every local edit
 
 ```bash

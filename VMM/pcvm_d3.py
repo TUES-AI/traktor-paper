@@ -4,7 +4,7 @@ This backend is the real-rover candidate after offline replay calibration:
 - encoder: onnx-community/dinov3-vits16-pretrain-lvd1689m-ONNX
 - variant: model_quantized
 - input: 336x336
-- visual memory threshold: 1.0
+- visual memory threshold: 1.1
 """
 
 import math
@@ -39,7 +39,7 @@ DINO3_ONNX_REPO = 'onnx-community/dinov3-vits16-pretrain-lvd1689m-ONNX'
 DINO3_ONNX_VARIANT = 'model_quantized'
 DINO3_INPUT_SIZE = 336
 DINO3_FEATURE_DIM = 384
-DINO3_VIS_KNOWN_DIST = 1.00
+DINO3_VIS_KNOWN_DIST = 1.10
 DINO3_VIS_MEMORY_NORM_DIST = 2.20
 
 
