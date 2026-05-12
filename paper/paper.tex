@@ -213,7 +213,6 @@ The representative 100-step continuation run scored $+31.5$, traveled $20.3\,$m,
     \toprule
     Memory / reward ablation & Return $\uparrow$ & Travel $\uparrow$ & BBox $\uparrow$ & Visual novelty $\uparrow$ & Zero-prog. $\downarrow$ & Status \\
     \midrule
-    XYZ -- Deterministic &  &  &  &  &  & baseline \\
     Path memory only &  &  &  &  &  & planned \\
     Visual memory only &  &  &  &  &  & planned \\
     Path + visual memory &  &  &  &  &  & current \\
@@ -249,12 +248,11 @@ The coverage reward was introduced after visual review showed that a two-room ru
     Tiny PCVM CNN & current weak baseline & current \\
     MobileNet & cheap pretrained features & planned \\
     DINO-style encoder & semantic view similarity & planned \\
-    V-JEPA & predictive world features & offline \\
+    CLIP & language-aligned scene features & planned \\
+    V-JEPA & predictive world features & planned \\
+    Wall-trained CNN & task-specific local texture & planned \\
     \bottomrule
   \end{tabular}
-
-  \vspace{0.03in}
-  {\colorbox{yellow!25}{\parbox{0.94\linewidth}{\footnotesize\textbf{Temporary note, delete later.} Decide which metric should define success for this table, then add at least one or two more vision/backbone alternatives before final submission.}}}
 \end{table}
 
 \section{Discussion}
@@ -269,33 +267,5 @@ This draft supports a narrow claim: decoupled planning and terrain-adaptive exec
 \appendix
 \section{Appendix Placeholder}
 Extended run sheets, reward-audit details, and repeated-run ablations will go here.
-
-\section{Robot Platform}
-
-The robot is built around a Raspberry Pi 5, which serves as the primary computational unit responsible for sensor processing, decision-making, and execution of the machine learning algorithms. Power is supplied by an 18.5 V 4200 mAh 5S battery pack, enabling portable operation while maintaining sufficient energy density for both computation and motor control. The electrical architecture utilizes two dedicated step-down converters: the first provides a regulated 12 V rail capable of delivering up to 2 A for the dual DC drive motors through an L298N motor driver, while the second converter supplies stable 5 V Power Delivery to the Raspberry Pi system.
-
-The robot integrates multiple sensing modalities to support autonomous navigation and environmental awareness. Positioning data is obtained through a GY-NEO6MV2 connected via UART communication, while orientation and motion tracking are handled by an MPU-9050 connected over the I$^2$C bus. Visual input is provided by a Pi Camera Module 3 attached through the MIPI interface, enabling real-time image acquisition for machine learning inference and navigation tasks. Additionally, three ultrasonic sensors positioned across the front and side sections of the robot provide short-range obstacle detection and spatial awareness. The chassis itself was fully custom-designed and manufactured using 3D printing techniques, allowing rapid iteration and mechanical optimization throughout the development process. The resulting system combines embedded computing, sensor fusion, and custom mechanical design into a compact robotic platform suitable for autonomous experimentation and adaptive learning applications.
-
-\begin{figure}[!h]
-  \centering
-  \begin{tikzpicture}
-    \draw[red, line width=5pt] (0,0) -- (5.8,3.4);
-    \draw[red, line width=5pt] (0,3.4) -- (5.8,0);
-    \node[red, font=\bfseries\Large] at (2.9,1.7) {TRACTOR IMAGE PLACEHOLDER};
-  \end{tikzpicture}
-  \caption{Placeholder for final robot photograph.}
-  \label{fig:robot-photo-placeholder}
-\end{figure}
-
-\begin{figure}[!h]
-  \centering
-  \begin{tikzpicture}
-    \draw[red, line width=5pt] (0,0) -- (5.8,3.4);
-    \draw[red, line width=5pt] (0,3.4) -- (5.8,0);
-    \node[red, font=\bfseries\Large, align=center] at (2.9,1.7) {RASPBERRY PI\\WIRING DIAGRAM PLACEHOLDER};
-  \end{tikzpicture}
-  \caption{Placeholder for final Raspberry Pi wiring diagram.}
-  \label{fig:pi-wiring-placeholder}
-\end{figure}
 
 \end{document}

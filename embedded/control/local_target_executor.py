@@ -9,7 +9,6 @@ from dataclasses import dataclass
 class LocalTargetExecutorConfig:
     turn_pwm: float = 65.0
     max_turn_pwm: float = 100.0
-    left_turn_left_pwm_boost: float = 1.50
     drive_pwm: float = 90.0
     dt: float = 0.05
     turn_tolerance_deg: float = 5.0
@@ -21,9 +20,6 @@ class LocalTargetExecutorConfig:
     obstacle_margin_cm: float = 20.0
     until_front_stop_cm: float = 40.0
     until_front_emergency_cm: float = 28.0
-    until_front_too_close_recover_cm: float = 15.0
-    until_front_recover_clear_cm: float = 20.0
-    until_front_recover_max_seconds: float = 2.0
 
 
 class LocalTargetExecutor:
@@ -109,13 +105,11 @@ class LocalTargetExecutor:
         last = time.monotonic()
         start = last
         pwm = cfg.turn_pwm
-        left_speed = min(cfg.max_turn_pwm, pwm * cfg.left_turn_left_pwm_boost) if direction == 'left' else pwm
-        right_speed = pwm
         last_progress_time = start
         last_abs_yaw = 0.0
 
-        self.set_status(f'turning_{direction}_{theta_deg:.1f} pwm={pwm:.0f} left={left_speed:.0f} right={right_speed:.0f}')
-        self.safety.rover.drive(left_cmd, right_cmd, left_speed=left_speed, right_speed=right_speed)
+        self.set_status(f'turning_{direction}_{theta_deg:.1f} pwm={pwm:.0f}')
+        self.safety.rover.drive(left_cmd, right_cmd, left_speed=pwm, right_speed=pwm)
         try:
             while time.monotonic() - start < cfg.max_turn_seconds:
                 distances = self.safety.read_distances()
@@ -136,11 +130,9 @@ class LocalTargetExecutor:
                 if now - last_progress_time > cfg.turn_stall_seconds:
                     if pwm < cfg.max_turn_pwm:
                         pwm = cfg.max_turn_pwm
-                        left_speed = min(cfg.max_turn_pwm, pwm * cfg.left_turn_left_pwm_boost) if direction == 'left' else pwm
-                        right_speed = pwm
                         last_progress_time = now
-                        self.set_status(f'turning_{direction}_{theta_deg:.1f} pwm={pwm:.0f} left={left_speed:.0f} right={right_speed:.0f} full_boost')
-                        self.safety.rover.drive(left_cmd, right_cmd, left_speed=left_speed, right_speed=right_speed)
+                        self.set_status(f'turning_{direction}_{theta_deg:.1f} pwm={pwm:.0f} full_boost')
+                        self.safety.rover.drive(left_cmd, right_cmd, left_speed=pwm, right_speed=pwm)
                     elif abs_yaw < 3.0:
                         return {'ok': False, 'reason': f'stalled yaw={yaw:.1f}/{target:.1f}', 'yaw_deg': yaw, 'target_deg': target}
                 last = now
@@ -240,63 +232,50 @@ class LocalTargetExecutor:
         cfg = self.config
         front_stop_cm = cfg.until_front_stop_cm if front_stop_cm is None else float(front_stop_cm)
         emergency_cm = min(float(front_stop_cm), float(cfg.until_front_emergency_cm))
-        too_close_cm = float(cfg.until_front_too_close_recover_cm)
-        recover_clear_cm = float(cfg.until_front_recover_clear_cm)
         start_distances = self.safety.read_distances()
-        front = self.safety.read_front_distance()
-        if front is not None:
-            start_distances['front'] = front
+        front = start_distances['front']
         if front is not None and front <= front_stop_cm:
-            recovery = self._reverse_until_front_clear_if_needed(front, recover_clear_cm, too_close_cm)
             return {
                 'ok': True,
-                'reason': 'already_at_front_threshold' if recovery is None else 'already_at_front_threshold_recovered',
+                'reason': 'already_at_front_threshold',
                 'seconds': 0.0,
                 'estimated_distance_cm': 0.0,
                 'start_distances': start_distances,
                 'front_cm': front,
                 'threshold_cm': front_stop_cm,
-                'close_front_recovery': recovery,
             }
         start = time.monotonic()
         self.set_status(f'driving_until_front_{front_stop_cm:.1f}cm')
         self.safety.rover.drive('forward', 'forward', left_speed=cfg.drive_pwm, right_speed=cfg.drive_pwm)
         contact_monitor = self.safety.begin_forward_contact_monitor()
         last_front = front
-        front_samples = 0
         try:
             while time.monotonic() - start < cfg.max_drive_seconds:
-                front = self.safety.read_front_distance()
-                front_samples += 1
+                distances = self.safety.read_distances()
+                front = distances['front']
                 if front is not None:
                     last_front = front
                     elapsed = time.monotonic() - start
                     est = min(cfg.max_drive_seconds, elapsed) * cfg.cm_per_second
-                    if front <= emergency_cm:
-                        recovery = self._reverse_until_front_clear_if_needed(front, recover_clear_cm, too_close_cm)
-                        return {
-                            'ok': False,
-                            'reason': 'front_emergency_stop' if recovery is None else 'front_emergency_stop_recovered',
-                            'seconds': elapsed,
-                            'estimated_distance_cm': est,
-                            'start_distances': start_distances,
-                            'front_cm': front,
-                            'threshold_cm': emergency_cm,
-                            'front_samples': front_samples,
-                            'close_front_recovery': recovery,
-                        }
                     if front <= front_stop_cm:
-                        recovery = self._reverse_until_front_clear_if_needed(front, recover_clear_cm, too_close_cm)
                         return {
                             'ok': True,
-                            'reason': 'front_threshold_reached' if recovery is None else 'front_threshold_reached_recovered',
+                            'reason': 'front_threshold_reached',
                             'seconds': elapsed,
                             'estimated_distance_cm': est,
                             'start_distances': start_distances,
                             'front_cm': front,
                             'threshold_cm': front_stop_cm,
-                            'front_samples': front_samples,
-                            'close_front_recovery': recovery,
+                        }
+                    if front <= emergency_cm:
+                        return {
+                            'ok': False,
+                            'reason': 'front_emergency_stop',
+                            'seconds': elapsed,
+                            'estimated_distance_cm': est,
+                            'start_distances': start_distances,
+                            'front_cm': front,
+                            'threshold_cm': emergency_cm,
                         }
                 contact = self.safety.update_forward_contact_monitor(contact_monitor)
                 if contact and contact.get('contact_or_stall'):
@@ -311,13 +290,11 @@ class LocalTargetExecutor:
                         'start_distances': start_distances,
                         'front_cm': last_front,
                         'threshold_cm': front_stop_cm,
-                        'front_samples': front_samples,
                         'contact_or_stall': True,
                         'stall_score': recovery.get('stall_score', 1.0),
                         'contact_recovery': recovery,
                     }
-                if self.safety.config.front_fast_sample_seconds > 0.0:
-                    time.sleep(self.safety.config.front_fast_sample_seconds)
+                time.sleep(cfg.dt)
             elapsed = time.monotonic() - start
             return {
                 'ok': True,
@@ -327,49 +304,7 @@ class LocalTargetExecutor:
                 'start_distances': start_distances,
                 'front_cm': last_front,
                 'threshold_cm': front_stop_cm,
-                'front_samples': front_samples,
             }
         finally:
             self.safety.rover.stop_motors()
             time.sleep(0.15)
-
-    def _reverse_until_front_clear_if_needed(self, front_cm, clear_cm, trigger_cm):
-        if front_cm is None or float(front_cm) >= float(trigger_cm):
-            return None
-        cfg = self.config
-        start = time.monotonic()
-        samples = []
-        self.set_status(f'front_too_close_{front_cm:.1f}cm_reversing_until_{clear_cm:.1f}cm')
-        self.safety.rover.stop_motors()
-        time.sleep(0.03)
-        self.safety.rover.drive(
-            'backward',
-            'backward',
-            left_speed=self.safety.config.reverse_recovery_speed,
-            right_speed=self.safety.config.reverse_recovery_speed,
-        )
-        final_front = front_cm
-        reason = 'max_reverse_time'
-        try:
-            while time.monotonic() - start < cfg.until_front_recover_max_seconds:
-                current = self.safety.read_front_distance()
-                final_front = current
-                samples.append(current)
-                if current is None or current >= clear_cm:
-                    reason = 'front_clear'
-                    break
-                if self.safety.config.front_fast_sample_seconds > 0.0:
-                    time.sleep(self.safety.config.front_fast_sample_seconds)
-        finally:
-            self.safety.rover.stop_motors()
-            time.sleep(0.05)
-        return {
-            'reason': reason,
-            'trigger_cm': trigger_cm,
-            'clear_cm': clear_cm,
-            'start_front_cm': front_cm,
-            'final_front_cm': final_front,
-            'seconds': time.monotonic() - start,
-            'samples': len(samples),
-            'speed_pct': self.safety.config.reverse_recovery_speed,
-        }

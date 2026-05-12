@@ -1,6 +1,0 @@
-Traceback (most recent call last):
-  File "/home/yasen/traktor-paper/embedded/scripts/run_dino_scan_baseline.py", line 20, in <module>
-    from dino_scan_common import DINOScanner, make_visual_cluster_sheet, read_distances, save_frame, summarize_log
-  File "/home/yasen/traktor-paper/embedded/scripts/dino_scan_common.py", line 14, in <module>
-    from VMM.pcvm_d3 import DINO3_VIS_KNOWN_DIST, DINO3_VIS_MEMORY_NORM_DIST, DINO3L2MemoryBank, DINOv3ONNXVisualEncoder
-ModuleNotFoundError: No module named 'VMM.pcvm_d3'

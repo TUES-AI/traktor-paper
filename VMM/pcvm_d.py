@@ -36,10 +36,6 @@ from VMM.pcvm import (
 )
 
 
-PCVM_DINO_VIS_KNOWN_DIST = 0.38
-PCVM_DINO_VIS_MEMORY_NORM_DIST = 0.76
-
-
 class DINOv2VisualEncoder(nn.Module):
     def __init__(self, model_name='facebook/dinov2-small', out_dim=256):
         super().__init__()
@@ -107,7 +103,7 @@ class PCVMDINO:
         )
         self.rnd_opt = torch.optim.Adam(self.net.rnd_pred.parameters(), lr=5e-5)
         self.memory = PCVMMemoryBank()
-        self.visual_memory = PCVMMemoryBank(known_dist=PCVM_DINO_VIS_KNOWN_DIST, update_rate=PCVM_VIS_UPDATE_RATE)
+        self.visual_memory = PCVMMemoryBank(known_dist=PCVM_VIS_KNOWN_DIST, update_rate=PCVM_VIS_UPDATE_RATE)
         self.rnd_norm = RunningMean()
         self.surprise_norm = RunningMean()
         self.hidden = torch.zeros(1, PCVM_HIDDEN_DIM, device=self.device)
@@ -219,7 +215,7 @@ class PCVMDINO:
             path_new_cluster = False
             visual_new_cluster = False
         path_mem_norm = float(np.clip(path_mem_dist / PCVM_MEMORY_NORM_DIST, 0.0, 1.0))
-        visual_mem_norm = float(np.clip(visual_mem_dist / PCVM_DINO_VIS_MEMORY_NORM_DIST, 0.0, 1.0))
+        visual_mem_norm = float(np.clip(visual_mem_dist / PCVM_VIS_MEMORY_NORM_DIST, 0.0, 1.0))
         mem_dist = max(path_mem_dist, visual_mem_dist)
         mem_norm = max(path_mem_norm, visual_mem_norm)
         new_cluster = bool(path_new_cluster or visual_new_cluster)
