@@ -54,7 +54,7 @@ class RealPredictiveSACEnv(gym.Env):
             high=np.full((1 if args.action_mode == 'theta_until_front' else 2,), 1.0, dtype=np.float32),
         )
         self.policy_action_dim = int(self.action_space.shape[0])
-        obs_dim = pcvm_obs_dim(self.policy_action_dim) if args.backend in ('pcvm', 'pcvm-m', 'pcvm-d', 'pcvm-j', 'pcvm-t') else 79
+        obs_dim = pcvm_obs_dim(self.policy_action_dim) if args.backend in ('pcvm', 'pcvm-m', 'pcvm-t') else 79
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32)
 
         self.rover = RoverAPI(camera_enabled=True)
@@ -69,13 +69,11 @@ class RealPredictiveSACEnv(gym.Env):
                 no_echo_is_clear=not args.no_echo_is_wall,
             ),
         )
-        if args.backend in ('pcvm', 'pcvm-m', 'pcvm-d', 'pcvm-j', 'pcvm-t'):
+        if args.backend in ('pcvm', 'pcvm-m', 'pcvm-t'):
             self.obs_builder = PCVMRoverObsBuilder(
                 self.rover,
                 self.safety,
                 mobilenet=(args.backend == 'pcvm-m'),
-                dino=(args.backend == 'pcvm-d'),
-                jepa=(args.backend == 'pcvm-j'),
                 transformer=(args.backend == 'pcvm-t'),
                 action_dim=self.policy_action_dim,
             )
@@ -155,7 +153,7 @@ class RealPredictiveSACEnv(gym.Env):
         return obs, {'distances': distances, 'backend': backend}
 
     def _build_obs(self, action, execution_feedback=None):
-        if self.args.backend in ('pcvm', 'pcvm-m', 'pcvm-d', 'pcvm-j', 'pcvm-t'):
+        if self.args.backend in ('pcvm', 'pcvm-m', 'pcvm-t'):
             return self.obs_builder.build_pcvm(action, execution_feedback)
         return self.obs_builder.build_predictive(action)
 
@@ -743,7 +741,7 @@ def load_pcvm_state(model, path, args):
 def parse_args():
     parser = argparse.ArgumentParser(description='Train predictive SAC online on the real rover.')
     parser.add_argument('--steps', type=int, default=100)
-    parser.add_argument('--backend', choices=['predictive', 'pcvm', 'pcvm-m', 'pcvm-d', 'pcvm-j', 'pcvm-t'], default='pcvm')
+    parser.add_argument('--backend', choices=['predictive', 'pcvm', 'pcvm-m', 'pcvm-t'], default='pcvm')
     parser.add_argument('--action-mode', choices=['local_target', 'theta_until_front'], default='local_target')
     parser.add_argument('--save-path', default=None)
     parser.add_argument('--log-path', default=None, help='Write per-step JSONL records for later analysis')
@@ -832,10 +830,6 @@ def main():
     if args.save_path is None:
         if args.backend == 'pcvm-m':
             args.save_path = 'results/pcvm_m_sac_real.zip'
-        elif args.backend == 'pcvm-d':
-            args.save_path = 'results/pcvm_d_sac_real.zip'
-        elif args.backend == 'pcvm-j':
-            args.save_path = 'results/pcvm_d_sac_real.zip'
         elif args.backend == 'pcvm-t':
             args.save_path = 'results/pcvm_t_sac_real.zip'
         elif args.backend == 'pcvm':
@@ -867,7 +861,7 @@ def main():
             pcvm_resume_path = args.pcvm_resume_path
             if pcvm_resume_path is None and not args.no_auto_pcvm_resume:
                 pcvm_resume_path = default_pcvm_path(args.resume)
-            if args.backend in ('pcvm', 'pcvm-m', 'pcvm-d', 'pcvm-j', 'pcvm-t') and pcvm_resume_path is not None:
+            if args.backend in ('pcvm', 'pcvm-m', 'pcvm-t') and pcvm_resume_path is not None:
                 resumed = load_pcvm_state(get_pcvm_model(env), pcvm_resume_path, args)
                 print(json.dumps({
                     'pcvm_resumed': bool(resumed),
@@ -904,7 +898,7 @@ def main():
                 saved['replay_saved'] = replay_save_path
             except Exception as exc:
                 saved['replay_save_failed'] = repr(exc)
-        if args.backend in ('pcvm', 'pcvm-m', 'pcvm-d', 'pcvm-j', 'pcvm-t'):
+        if args.backend in ('pcvm', 'pcvm-m', 'pcvm-t'):
             pcvm_save_path = args.pcvm_save_path or default_pcvm_path(args.save_path)
             try:
                 saved['pcvm_saved'] = save_pcvm_state(get_pcvm_model(env), pcvm_save_path, args)
