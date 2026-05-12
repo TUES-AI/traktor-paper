@@ -28,6 +28,7 @@ class DualHBridgeMotorDriver:
         left_pwm_pin=19,
         right_pwm_pin=18,
         pwm_frequency_hz=100,
+        left_pwm_beta=0.90,
         right_pwm_beta=1.0,
     ):
         self.left_in1 = left_in1
@@ -37,6 +38,7 @@ class DualHBridgeMotorDriver:
         self.left_pwm_pin = left_pwm_pin
         self.right_pwm_pin = right_pwm_pin
         self.pwm_frequency_hz = pwm_frequency_hz
+        self.left_pwm_beta = float(left_pwm_beta)
         self.right_pwm_beta = float(right_pwm_beta)
 
         self.control_pins = (left_in1, left_in2, right_in1, right_in2)
@@ -81,6 +83,9 @@ class DualHBridgeMotorDriver:
             raise ValueError(f'Speed must be between 0 and 100, got {speed}')
         return duty
 
+    def _normalize_left_speed(self, speed):
+        return min(100.0, self._normalize_speed(speed) * self.left_pwm_beta)
+
     def _normalize_right_speed(self, speed):
         return min(100.0, self._normalize_speed(speed) * self.right_pwm_beta)
 
@@ -99,7 +104,7 @@ class DualHBridgeMotorDriver:
         side_name = self._normalize_side(side)
         state, normalized_direction = self._normalize_direction(direction)
         if side_name == 'left':
-            duty = 0.0 if normalized_direction == 'stop' else self._normalize_speed(speed)
+            duty = 0.0 if normalized_direction == 'stop' else self._normalize_left_speed(speed)
         else:
             duty = 0.0 if normalized_direction == 'stop' else self._normalize_right_speed(speed)
 
@@ -116,7 +121,7 @@ class DualHBridgeMotorDriver:
         """Drive both motors in one GPIO/PWM update."""
         left_state, left_norm = self._normalize_direction(left_direction)
         right_state, right_norm = self._normalize_direction(right_direction)
-        left_duty = 0.0 if left_norm == 'stop' else self._normalize_speed(left_speed)
+        left_duty = 0.0 if left_norm == 'stop' else self._normalize_left_speed(left_speed)
         right_duty = 0.0 if right_norm == 'stop' else self._normalize_right_speed(right_speed)
 
         self._set_left_state(left_state)
@@ -138,7 +143,7 @@ class DualHBridgeMotorDriver:
         """Change PWM duty cycle for one motor without changing direction pins."""
         side_name = self._normalize_side(side)
         if side_name == 'left':
-            duty = self._normalize_speed(speed)
+            duty = self._normalize_left_speed(speed)
             self._left_pwm.ChangeDutyCycle(duty)
         else:
             duty = self._normalize_right_speed(speed)
@@ -146,7 +151,7 @@ class DualHBridgeMotorDriver:
         return {'side': side_name, 'speed': duty}
 
     def set_speeds(self, left_speed, right_speed):
-        left_duty = self._normalize_speed(left_speed)
+        left_duty = self._normalize_left_speed(left_speed)
         right_duty = self._normalize_right_speed(right_speed)
         if self._right_pwm is self._left_pwm:
             self._left_pwm.ChangeDutyCycle(max(left_duty, right_duty))
@@ -159,7 +164,7 @@ class DualHBridgeMotorDriver:
         """Set raw H-bridge states directly for low-level hardware debugging."""
         left_state = (1 if left_in1 else 0, 1 if left_in2 else 0)
         right_state = (1 if right_in1 else 0, 1 if right_in2 else 0)
-        left_duty = 0.0 if left_state == self._STOP else self._normalize_speed(left_speed)
+        left_duty = 0.0 if left_state == self._STOP else self._normalize_left_speed(left_speed)
         right_duty = 0.0 if right_state == self._STOP else self._normalize_right_speed(right_speed)
 
         self._set_left_state(left_state)

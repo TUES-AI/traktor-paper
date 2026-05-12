@@ -20,7 +20,7 @@ from select import select
 
 import _paths  # noqa: F401
 from drivers.motor.hbridge import DualHBridgeMotorDriver
-from hardware_pins import LEFT_MOTOR_PINS, MOTOR_PWM_FREQUENCY_HZ, MOTOR_PWM_PINS, RIGHT_MOTOR_PINS
+from hardware_pins import LEFT_MOTOR_PINS, LEFT_MOTOR_PWM_BETA, MOTOR_PWM_FREQUENCY_HZ, MOTOR_PWM_PINS, RIGHT_MOTOR_PINS
 
 SPEED = 100
 STOP_AFTER_SECONDS = 0.22
@@ -59,11 +59,12 @@ def main():
         left_pwm_pin=MOTOR_PWM_PINS[0],
         right_pwm_pin=MOTOR_PWM_PINS[1],
         pwm_frequency_hz=MOTOR_PWM_FREQUENCY_HZ,
+        left_pwm_beta=LEFT_MOTOR_PWM_BETA,
     )
 
     print(__doc__.strip(), flush=True)
     print(f'pins: left={LEFT_MOTOR_PINS}, right={RIGHT_MOTOR_PINS}, pwm={MOTOR_PWM_PINS}', flush=True)
-    print(f'speed: {SPEED}%', flush=True)
+    print(f'speed: {SPEED}% (left PWM beta {LEFT_MOTOR_PWM_BETA}x)', flush=True)
     print(f'hold-to-run timeout: {STOP_AFTER_SECONDS}s', flush=True)
 
     fd = None

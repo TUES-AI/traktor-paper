@@ -13,6 +13,7 @@ from hardware_pins import (
     GPS_FALLBACK_FILE,
     GPS_PORT,
     LEFT_MOTOR_PINS,
+    LEFT_MOTOR_PWM_BETA,
     MOTOR_PWM_FREQUENCY_HZ,
     MOTOR_PWM_PINS,
     RIGHT_MOTOR_PWM_BETA,
@@ -33,6 +34,7 @@ class RoverAPI:
         right_motor_pins=RIGHT_MOTOR_PINS,
         motor_pwm_pins=MOTOR_PWM_PINS,
         motor_pwm_frequency_hz=MOTOR_PWM_FREQUENCY_HZ,
+        left_motor_pwm_beta=LEFT_MOTOR_PWM_BETA,
         right_motor_pwm_beta=RIGHT_MOTOR_PWM_BETA,
         ultrasonic1_pins=ULTRASONIC_1_PINS,
         ultrasonic2_pins=ULTRASONIC_2_PINS,
@@ -56,6 +58,7 @@ class RoverAPI:
             left_pwm_pin=motor_pwm_pins[0],
             right_pwm_pin=motor_pwm_pins[1],
             pwm_frequency_hz=motor_pwm_frequency_hz,
+            left_pwm_beta=left_motor_pwm_beta,
             right_pwm_beta=right_motor_pwm_beta,
         )
         self.camera = PiCam2FrameDriver() if camera_enabled else None
